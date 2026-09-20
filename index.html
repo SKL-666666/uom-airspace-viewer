@@ -227,6 +227,13 @@ const map = L.map('map', {
   attributionControl: false
 });
 
+/* 自定义 pane 控制叠放顺序。
+   Leaflet 同 pane 内后添加的图层盖在上面，底图和 UOM 都在默认 tilePane
+   会导致底图遮住 UOM 图层，所以分层：
+     底图 200 < UOM 300 < 大疆/管制区 400（overlayPane 默认值） */
+map.createPane('basePane').style.zIndex = 200;
+map.createPane('uomPane').style.zIndex = 300;
+
 let baseLayer = null;
 const gridOpts = { updateWhenIdle:false, updateWhenZooming:true, keepBuffer:1, tileSize:256 };
 
@@ -239,20 +246,31 @@ function setBase(kind){
   else if (kind === 'tdt_img') baseLayer = tdtLayer('img');
   else if (kind === 'amap_vec') baseLayer = amapLayer('vec');
   else if (kind === 'amap_sat') baseLayer = amapLayer('sat');
-  if (baseLayer) baseLayer.addTo(map);
+  if (baseLayer){
+    baseLayer.options.pane = 'basePane';
+    baseLayer.addTo(map);
+  }
 }
 
 /* ---------------- UOM 适飞层（PMTiles） ---------------- */
 let pm = null, uomLayer = null;
 let uomReady = false;
+let uomError = '';
 
 try {
   pm = new pmtiles.PMTiles('data/uom-shifei.pmtiles');
   uomLayer = pmtiles.leafletRasterLayer(pm, {
-    minZoom: 0, maxZoom: NATIVE_MAX_Z, tileSize: 256, opacity: 0.65
+    pane: 'uomPane',        // 必须在底图之上，否则被底图盖住
+    minZoom: 0,
+    maxNativeZoom: NATIVE_MAX_Z,   // 原生最大 13 级
+    maxZoom: 18,                   // 13 级以上 Leaflet 自动放大父瓦片（超采样）
+    tileSize: 256,
+    opacity: 0.65
   }).addTo(map);
   uomReady = true;
+  uomLayer.on('tileerror', e => console.warn('UOM 瓦片加载失败', e.coords));
 } catch(e){
+  uomError = e.message || String(e);
   console.error('PMTiles 初始化失败', e);
 }
 
@@ -533,12 +551,16 @@ if (CONFIG.tiandituKey){
   setBase('amap_vec');
 }
 
-/* 数据就绪后隐藏加载层 */
+/* 数据就绪后隐藏加载层；无论成败都要能继续用 */
+const hideLoading = () => { document.getElementById('loading').style.display = 'none'; };
 if (uomLayer){
-  uomLayer.once('load', () => document.getElementById('loading').style.display = 'none');
-  setTimeout(() => document.getElementById('loading').style.display = 'none', 4000);
+  uomLayer.once('load', hideLoading);
+  setTimeout(hideLoading, 3000);
 } else {
-  document.getElementById('loading').innerHTML = '<div>PMTiles 初始化失败，请查看控制台</div>';
+  document.getElementById('loading').innerHTML =
+    '<div style="color:#f87171">PMTiles 初始化失败</div>' +
+    '<div style="font-size:11px;margin-top:6px">' + (uomError || '请查看控制台') + '</div>';
+  setTimeout(hideLoading, 5000);
 }
 </script>
 </body>

@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>UOM 数据自检</title>
+<style>
+  body{font-family:ui-monospace,Menlo,Consolas,monospace;background:#111;color:#ddd;
+       margin:0;padding:16px;font-size:13px;line-height:1.7}
+  h1{font-size:15px;margin:0 0 12px}
+  .t{padding:2px 0}
+  .ok{color:#4ade80}
+  .bad{color:#f87171}
+  .warn{color:#fbbf24}
+  .dim{color:#888}
+  img{border:1px solid #444;image-rendering:pixelated;width:256px;height:256px;background:
+      repeating-conic-gradient(#333 0% 25%, #222 0% 50%) 50%/16px 16px}
+  .box{margin:10px 0;padding:10px;background:#1a1a1a;border:1px solid #333;border-radius:6px}
+</style>
+</head>
+<body>
+<h1>UOM 数据自检</h1>
+<div id="out"></div>
+
+<script src="lib/pmtiles.js"></script>
+<script>
+const out = document.getElementById('out');
+const $ = (cls, txt) => { const d=document.createElement('div');
+  d.className='t '+cls; d.textContent=txt; out.appendChild(d); return d; };
+const box = (title) => { const d=document.createElement('div'); d.className='box';
+  d.innerHTML='<b>'+title+'</b>'; out.appendChild(d); return d; };
+
+window.onerror = (m,s,l,c,e) => { $('bad', '❌ 未捕获错误: '+m+' @'+l+':'+c); };
+
+(async function(){
+  // 1. 库加载
+  $('dim', typeof pmtiles !== 'undefined' ? '✓ pmtiles.js 已加载' : '✗ pmtiles.js 未加载');
+  if (typeof pmtiles === 'undefined') return $('bad','中止：库缺失');
+
+  // 2. 原生 fetch + Range 测试
+  const b2 = box('1) 原生 fetch + Range 请求');
+  try {
+    const r = await fetch('data/uom-shifei.pmtiles', { headers:{ Range:'bytes=0-126' } });
+    $('', '  状态码: '+r.status+'  (期望 206)');
+    $('', '  Content-Range: '+(r.headers.get('content-range')||'无'));
+    $('', '  Accept-Ranges: '+(r.headers.get('accept-ranges')||'无'));
+    const buf = new Uint8Array(await r.arrayBuffer());
+    const magic = new TextDecoder().decode(buf.slice(0,7));
+    $(magic==='PMTiles'?'ok':'bad', '  魔数: "'+magic+'"  (期望 "PMTiles")');
+    const ver = buf[7];
+    $('', '  版本: '+ver+'  (期望 3)');
+    if (r.status !== 206) $('warn','  ⚠ 非 206：服务器可能不支持 Range，PMTiles 会失效');
+  } catch(e){ $('bad','  ✗ 请求失败: '+e.message); }
+
+  // 3. PMTiles 对象 + header
+  const b3 = box('2) PMTiles 实例与 header');
+  let pm = null;
+  try {
+    pm = new pmtiles.PMTiles('data/uom-shifei.pmtiles');
+    const h = await pm.getHeader();
+    $('ok','  ✓ header 获取成功');
+    $('', '  tileType: '+h.tileType+'  (2=PNG)');
+    $('', '  zoom: '+h.minZoom+'~'+h.maxZoom);
+    $('', '  bounds: ['+h.minLon.toFixed(2)+','+h.minLat.toFixed(2)+' ~ '+
+           h.maxLon.toFixed(2)+','+h.maxLat.toFixed(2)+']');
+  } catch(e){
+    $('bad','  ✗ header 失败: '+e.message);
+    return $('bad','中止：header 拿不到，后续无从测起');
+  }
+
+  // 4. 取瓦片
+  const b4 = box('3) 取瓦片（z5/25/12，已知有数据）');
+  try {
+    const res = await pm.getZxy(5, 25, 12);
+    if (!res) { $('bad','  ✗ 返回空'); }
+    else {
+      $('ok','  ✓ 拿到 '+(res.data.byteLength/1024).toFixed(1)+' KB');
+      // PNG 校验
+      const b = new Uint8Array(res.data);
+      const sig = [137,80,78,71,13,10,26,10];
+      const isPng = sig.every((v,i)=>b[i]===v);
+      $(isPng?'ok':'bad','  PNG 魔数: '+(isPng?'正确':'错误 ('+Array.from(b.slice(0,8)).join(',')+')'));
+      const blob = new Blob([res.data], {type:'image/png'});
+      const url = URL.createObjectURL(blob);
+      const img = new Image();
+      img.onload = async () => {
+        $('ok','  ✓ 图片解码成功 '+img.width+'x'+img.height);
+        b4.appendChild(document.createElement('br'));
+        b4.appendChild(img);
+        // 读像素统计
+        const cv=document.createElement('canvas'); cv.width=cv.height=256;
+        const cx=cv.getContext('2d'); cx.drawImage(img,0,0);
+        const d=cx.getImageData(0,0,256,256).data;
+        let n=0, colors=new Map();
+        for(let i=0;i<d.length;i+=4){
+          if(d[i+3]>0){ n++; const k=d[i]+','+d[i+1]+','+d[i+2]+','+d[i+3];
+            colors.set(k,(colors.get(k)||0)+1); }
+        }
+        $('', '  非透明像素: '+n+'/'+65536+' ('+(n/65536*100).toFixed(1)+'%)');
+        [...colors.entries()].slice(0,3).forEach(([k,v])=>$('','    色 '+k+' ×'+v));
+      };
+      img.onerror = () => $('bad','  ✗ 图片解码失败');
+      img.src = url;
+    }
+  } catch(e){ $('bad','  ✗ getZxy 失败: '+e.message); }
+
+  // 5. 逐层测试默认视野附近的瓦片
+  const b5 = box('4) 各层级取瓦片测试（默认中心 35.5N,105E）');
+  const ll2t = (lon,lat,z) => {
+    const n=Math.pow(2,z);
+    return [Math.floor((lon+180)/360*n),
+            Math.floor((1-Math.asinh(Math.tan(lat*Math.PI/180))/Math.PI)/2*n)];
+  };
+  for (const z of [4,5,6,7,8,10,12,13]){
+    const [x,y] = ll2t(105,35.5,z);
+    try {
+      const r = await pm.getZxy(z,x,y);
+      $(r?'ok':'warn', `  z${z} tile(${x},${y}): ` + (r ? '有数据' : '无瓦片'));
+    } catch(e){ $('bad',`  z${z} tile(${x},${y}): 异常 ${e.message}`); }
+  }
+
+  $('', '');
+  $('dim','自检结束。把上面所有内容截图给开发者。');
+})();
+</script>
+</body>
+</html>
