@@ -2,15 +2,23 @@ name: build-android-apk
 
 # 云端构建 Android APK。
 #
-# 为什么在 CI 构建而不是本机：本机没有 Android SDK。
-# GitHub Actions 的 ubuntu runner 自带 Android SDK 与 Gradle，
-# 构建产物直接上传为 artifact，可从 Release 页面下载。
+# 为什么在 CI 而不是本机：本机没有 Android SDK（搜索了所有常见路径都不存在），
+# 也没有 Gradle。GitHub Actions 的 ubuntu runner 自带 Android SDK。
+#
+# 触发方式：
+#   - 手动：Actions 页面点 Run workflow
+#   - 推 tag（v*）：自动构建并把 APK 附加到同名 Release
+#
+# 产物是**用一次性密钥签名的 debug 级 APK**，可直接安装，但不适合上架。
 
 on:
   workflow_dispatch:
   push:
     tags:
       - 'v*'
+
+permissions:
+  contents: write          # 推 tag 时需要上传到 Release
 
 jobs:
   build:
@@ -24,48 +32,65 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      # AGP 8.5.2 要求 Gradle 8.7+。runner 自带的 gradle 版本可能偏低，
+      # 所以显式装一个匹配的版本，不用系统的。
+      - name: 安装 Gradle 8.7
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.7'
+
       - name: 配置 Android SDK
         uses: android-actions/setup-android@v3
-
-      - name: 安装所需 SDK 组件
-        run: |
-          yes | sdkmanager --licenses > /dev/null 2>&1 || true
-          sdkmanager "platforms;android-34" "build-tools;34.0.0" > /dev/null
-
-      - name: 缓存 Gradle
-        uses: actions/cache@v4
         with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: gradle-${{ hashFiles('android/**/*.gradle', 'android/gradle/wrapper/gradle-wrapper.properties') }}
+          packages: 'platforms;android-34 build-tools;34.0.0'
 
-      - name: 构建 release APK（未签名）
+      - name: 接受许可
+        run: yes | sdkmanager --licenses > /dev/null 2>&1 || true
+
+      - name: 显示环境
         working-directory: android
         run: |
-          chmod +x gradlew || true
-          # 没有 gradle-wrapper.jar，直接用 runner 上的 gradle
-          gradle assembleRelease --no-daemon --stacktrace
+          java -version
+          gradle --version
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          ls "$ANDROID_HOME/platforms" || true
 
-      - name: 用 debug 密钥签名，方便直接安装
+      - name: 构建 release APK
+        working-directory: android
+        run: gradle assembleRelease --no-daemon --stacktrace --info
+
+      - name: 签名
+        if: success()
         working-directory: android
         run: |
+          set -e
           APK=$(find app/build/outputs/apk/release -name "*.apk" | head -1)
+          if [ -z "$APK" ]; then echo "未找到 APK"; find app/build -name "*.apk"; exit 1; fi
           echo "构建产物: $APK"
-          # 生成一次性 debug keystore
-          keytool -genkeypair -v -keystore uom.jks -storepass uomviewer \
-            -keypass uomviewer -alias uom -keyalg RSA -keysize 2048 \
-            -validity 10000 -dname "CN=UOM Viewer, OU=Dev, O=SKL, L=NA, ST=NA, C=CN" > /dev/null 2>&1
-          BT=$(ls $ANDROID_HOME/build-tools | sort -V | tail -1)
-          $ANDROID_HOME/build-tools/$BT/apksigner sign --ks uom.jks \
-            --ks-pass pass:uomviewer --key-pass pass:uomviewer \
-            --out uom-viewer-signed.apk "$APK"
-          $ANDROID_HOME/build-tools/$BT/apksigner verify uom-viewer-signed.apk && echo "签名校验通过"
-          ls -la uom-viewer-signed.apk
+          # 一次性密钥：只为让 APK 可安装，不是发布用密钥
+          keytool -genkeypair -v -keystore uom.jks \
+            -storepass uomviewer -keypass uomviewer -alias uom \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=UOM Viewer, OU=Dev, O=SKL, L=NA, ST=NA, C=CN"
+          BT=$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)
+          "$ANDROID_HOME/build-tools/$BT/zipalign" -v 4 "$APK" aligned.apk
+          "$ANDROID_HOME/build-tools/$BT/apksigner" sign \
+            --ks uom.jks --ks-pass pass:uomviewer --key-pass pass:uomviewer \
+            --out UOM-Viewer-Android.apk aligned.apk
+          "$ANDROID_HOME/build-tools/$BT/apksigner" verify --print-certs UOM-Viewer-Android.apk
+          ls -la UOM-Viewer-Android.apk
 
-      - name: 上传 APK
+      - name: 上传 artifact
         uses: actions/upload-artifact@v4
         with:
-          name: uom-viewer-apk
-          path: android/uom-viewer-signed.apk
+          name: uom-viewer-android-apk
+          path: android/UOM-Viewer-Android.apk
           if-no-files-found: error
+
+      # 推 tag 时，把 APK 附加到同名 Release
+      - name: 附加到 Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: android/UOM-Viewer-Android.apk
+          fail_on_unmatched_files: true
