@@ -79,8 +79,8 @@
      所有图层共用这一个变换 —— 所以只要动画期间不插新瓦片请求，
      两层就严格同步。will-change 让它走 GPU 合成。 */
   .leaflet-map-pane{will-change:transform;backface-visibility:hidden}
-  /* 放大超过原生 13 级后瓦片会被拉伸，保持平滑插值而非硬像素块 */
-  .uom-tile{will-change:transform;backface-visibility:hidden}
+  /* 注意：不要给单个瓦片加 will-change —— 一屏几百个瓦片各自提升为
+     独立合成层会导致 GPU 内存暴涨、严重掉帧。这里不设。 */
 
   /* 面板开关：桌面上隐藏（侧栏常驻），手机上显示 */
   #menuBtn{display:none;width:auto;flex:none;padding:5px 10px;font-size:15px;line-height:1}
@@ -285,7 +285,7 @@
    alpha 严格为 0 或 255，无抗锯齿中间值，因此判定无歧义。
    瓦片缺失 ⇒ 该区域无适飞空域。 */
 /* 构建标识：用来确认浏览器实际加载的是哪一版，排查缓存问题 */
-const BUILD = 'v6';
+const BUILD = 'v7';
 
 /* 诊断上报：把浏览器里的真实状态回传到本地服务器，落盘成 diag.log。
    排查时截图里的文字读不出来，直接回传文本最省事。 */
@@ -427,7 +427,12 @@ function setBase(kind){
   else if (kind === 'amap_vec') baseLayer = amapLayer('vec');
   else if (kind === 'amap_sat') baseLayer = amapLayer('sat');
   if (baseLayer){
+    /* 天地图返回的是 LayerGroup（底图+注记两层），给 LayerGroup 设 pane
+       不会传递给子图层，必须逐层设置，否则子图层仍落在默认 tilePane。 */
     baseLayer.options.pane = 'basePane';
+    if (typeof baseLayer.eachLayer === 'function'){
+      baseLayer.eachLayer(l => { l.options.pane = 'basePane'; });
+    }
     baseLayer.addTo(map);
   }
 }
@@ -851,6 +856,45 @@ setTimeout(async () => {
       info.pmTestError = (e && e.message) || String(e);
     }
   }
+
+  /* DOM 实测：直接读出渲染层真实状态。
+     瓦片"加载成功"但"看不见"，只有查 DOM 才能定位。 */
+  try {
+    const pane = map.getPane('uomPane');
+    const imgs = pane ? pane.querySelectorAll('img') : [];
+    const cs = pane ? getComputedStyle(pane) : null;
+    info.uomPane = {
+      exists: !!pane,
+      zIndex: cs && cs.zIndex,
+      opacity: cs && cs.opacity,
+      display: cs && cs.display,
+      visibility: cs && cs.visibility,
+      imgCount: imgs.length
+    };
+    // 取几个样本看图片本身有没有加载成功
+    info.uomImgSample = [...imgs].slice(0, 3).map(el => {
+      const s = getComputedStyle(el);
+      return {
+        natural: el.naturalWidth + 'x' + el.naturalHeight,
+        complete: el.complete,
+        op: s.opacity, disp: s.display, vis: s.visibility,
+        w: el.width, h: el.height,
+        src: (el.src || '').slice(0, 24)
+      };
+    });
+    // 底图 pane 作对照
+    const bp = map.getPane('basePane');
+    info.basePane = {
+      exists: !!bp,
+      zIndex: bp ? getComputedStyle(bp).zIndex : null,
+      imgCount: bp ? bp.querySelectorAll('img').length : 0
+    };
+    // 真正加载完成的图片数
+    info.uomImgComplete = [...imgs].filter(el => el.complete && el.naturalWidth > 0).length;
+  } catch(e) {
+    info.domProbeError = (e && e.message) || String(e);
+  }
+
   report('STARTUP', info);
 }, 5000);
 
