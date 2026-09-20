@@ -161,16 +161,38 @@
   <div class="sec">
     <h3>底图</h3>
     <select id="baseSel"></select>
-    <div class="warnbox" id="tdtWarn">
-      天地图需要 API Key。请到 console.tianditu.gov.cn 免费申请后填入：
-      <div style="display:flex;gap:6px;margin-top:6px">
-        <input type="text" id="tdtKey" placeholder="粘贴 tk 参数" style="flex:1">
-        <button class="primary" id="tdtSave" style="width:auto;flex:none">保存</button>
-      </div>
-    </div>
+    <div class="warnbox" id="tdtWarn"></div>
     <div class="warnbox" id="amapWarn">
-      高德使用 GCJ-02 坐标系，与 UOM/大疆数据（WGS84）存在 <b>300–600 米偏移</b>，
-      叠加显示会错位。仅作底图参考，不要用于核对边界。
+      该底图使用 GCJ-02 / BD-09 坐标系，与 UOM、大疆数据（WGS84）存在
+      <b>300–600 米偏移</b>，叠加会错位。仅作底图参考，不要用于核对边界。
+    </div>
+  </div>
+
+  <div class="sec">
+    <h3>API Key</h3>
+    <div id="keyBox"></div>
+    <div class="hint">
+      仅保存在本机浏览器（localStorage），只用于拼进对应图源的瓦片地址。
+      留空则该图源不可用，其余功能不受影响。
+    </div>
+  </div>
+
+  <div class="sec">
+    <h3>自定义图源</h3>
+    <input type="text" id="cstName" placeholder="名称（如 我的地图）">
+    <input type="text" id="cstUrl" placeholder="瓦片地址模板，含 {z} {x} {y}"
+           style="margin-top:6px">
+    <input type="text" id="cstKey" placeholder="key 参数名（可选，如 tk）"
+           style="margin-top:6px">
+    <div style="display:flex;gap:6px;margin-top:6px">
+      <button class="primary" id="cstAdd" style="flex:1">添加</button>
+      <button id="cstClear" style="flex:none;width:auto">清空全部</button>
+    </div>
+    <div class="hint">
+      地址模板示例：<br>
+      <code style="font-size:10px;word-break:break-all">https://t{s}.tianditu.gov.cn/vec_w/wmts?...&amp;tk={k}</code><br>
+      支持 <code>{s}</code> 子域、<code>{k}</code>（填了上面的 key 参数名才生效）。
+      坐标系未知，默认按无偏移处理。
     </div>
   </div>
 
@@ -287,7 +309,7 @@
    alpha 严格为 0 或 255，无抗锯齿中间值，因此判定无歧义。
    瓦片缺失 ⇒ 该区域无适飞空域。 */
 /* 构建标识：用来确认浏览器实际加载的是哪一版，排查缓存问题 */
-const BUILD = 'v15-maps-prefetch';
+const BUILD = 'v15.1-maps-keys';
 
 /* 加载层兜底：放在脚本最前面注册。
    之前把它放在末尾，一旦中间某处抛错就永远不执行，页面会卡死在
@@ -437,9 +459,37 @@ function profTagDjiRenderer(r){
 const UOM_DATA_DATE = '2026-05-23';
 const DJI_DATA_DATE = '2026-06-03';
 
+/* =====================================================================
+   API Key 管理
+
+   每个需要 key 的图源在这里登记一条，界面上会自动生成对应输入框。
+   预留原则：key 存 localStorage，页面从不把 key 发往第三方，只用于
+   拼进该图源自己的瓦片 URL。
+   ===================================================================== */
+const KEYS = [
+  { id:'tdt',   label:'天地图 · tk',
+    hint:'console.tianditu.gov.cn 免费申请',
+    link:'https://console.tianditu.gov.cn/api/key' },
+  { id:'baidu', label:'百度地图 · ak',
+    hint:'lbsyun.baidu.com 申请「浏览器端」ak',
+    link:'https://lbsyun.baidu.com/apiconsole/key' }
+];
 const CONFIG = {
-  tiandituKey: localStorage.getItem('uom_tdt_key') || ''
+  keys: {},
+  custom: []          // 用户自定义图源 [{key,label,url,sub,tms}]
 };
+KEYS.forEach(k => { CONFIG.keys[k.id] = localStorage.getItem('uom_key_' + k.id) || ''; });
+try {
+  CONFIG.custom = JSON.parse(localStorage.getItem('uom_custom_src') || '[]') || [];
+} catch(e){ CONFIG.custom = []; }
+
+function saveKey(id, val){
+  CONFIG.keys[id] = val;
+  localStorage.setItem('uom_key_' + id, val);
+}
+function saveCustom(){
+  localStorage.setItem('uom_custom_src', JSON.stringify(CONFIG.custom));
+}
 
 /* ---------------- 底图 ---------------- */
 /* 瓦片层动画参数（底图与 UOM 层必须一致，否则缩放不同步）。
@@ -459,53 +509,138 @@ const TILE_OPTS = {
    GCJ-02 有 300~600 米偏移，只作参考底图，不能用来核对边界。
    下列图源都实测过能取到真实图片（不是只看状态码）。 */
 const BASEMAPS = [
-  { key:'tdt_vec',  label:'天地图 · 矢量',    crs:'WGS84',  note:'与数据无偏移', needKey:true },
-  { key:'tdt_img',  label:'天地图 · 影像',    crs:'WGS84',  note:'与数据无偏移', needKey:true },
-  { key:'esri_img', label:'Esri · 卫星影像',  crs:'WGS84',  note:'与数据无偏移',
+  /* --- 天地图（CGCS2000≈WGS84，与数据无偏移；需 tk）--- */
+  { key:'tdt_vec',  label:'天地图 · 矢量',    crs:'WGS84',  note:'无偏移', keyId:'tdt' },
+  { key:'tdt_img',  label:'天地图 · 影像',    crs:'WGS84',  note:'无偏移', keyId:'tdt' },
+  { key:'tdt_ter',  label:'天地图 · 地形',    crs:'WGS84',  note:'无偏移', keyId:'tdt' },
+
+  /* --- Esri（WGS84，与数据无偏移；免 key，独立 CDN）--- */
+  { key:'esri_img', label:'Esri · 卫星影像',  crs:'WGS84',  note:'无偏移',
     url:'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
     attr:'&copy; Esri' },
-  { key:'esri_str', label:'Esri · 街道',      crs:'WGS84',  note:'与数据无偏移',
+  { key:'esri_str', label:'Esri · 街道',      crs:'WGS84',  note:'无偏移',
     url:'https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}',
     attr:'&copy; Esri' },
-  { key:'esri_top', label:'Esri · 地形',      crs:'WGS84',  note:'与数据无偏移',
+  { key:'esri_top', label:'Esri · 地形',      crs:'WGS84',  note:'无偏移',
     url:'https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}',
     attr:'&copy; Esri' },
+
+  /* --- 高德（GCJ-02，有偏移；免 key）--- */
   { key:'amap_vec', label:'高德 · 矢量',      crs:'GCJ-02', note:'偏移 300~600m',
     url:'https://webrd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}',
     sub:'1234', attr:'&copy; 高德地图' },
   { key:'amap_sat', label:'高德 · 卫星',      crs:'GCJ-02', note:'偏移 300~600m',
     url:'https://webst0{s}.is.autonavi.com/appmaptile?style=6&x={x}&y={y}&z={z}',
     sub:'1234', attr:'&copy; 高德地图' },
+  { key:'amap_satl', label:'高德 · 卫星+路网注记', crs:'GCJ-02', note:'偏移 300~600m',
+    group:['amap_sat','amap_lbl'], attr:'&copy; 高德地图' },
+  { key:'amap_lbl', label:'高德 · 影像注记（叠加用）', crs:'GCJ-02', note:'偏移 300~600m',
+    url:'https://webst0{s}.is.autonavi.com/appmaptile?style=8&x={x}&y={y}&z={z}',
+    sub:'1234', attr:'&copy; 高德地图' },
+
+  /* --- 腾讯（GCJ-02，有偏移；免 key）--- */
   { key:'tx_vec',   label:'腾讯 · 矢量',      crs:'GCJ-02', note:'偏移 300~600m',
     url:'https://rt{s}.map.gtimg.com/realtime?z={z}&x={x}&y={y}&type=vector&style=0',
     sub:'0123', tms:true, attr:'&copy; 腾讯地图' },
+  /* 腾讯卫星路径含 {x>>4}/{y>>4} 两级目录，普通模板表达不了，用自定义函数 */
+  { key:'tx_sat',   label:'腾讯 · 卫星',      crs:'GCJ-02', note:'偏移 300~600m',
+    url:'https://p{s}.map.gtimg.com/sateTiles/{z}/{xd}/{yd}/{xy}.jpg',
+    sub:'0123', tms:true, urlFn:'tencent_sat', attr:'&copy; 腾讯地图' },
+
+  /* --- OSM 系（WGS84，与数据无偏移；免 key）--- */
+  { key:'osmd',     label:'OSM · 德国镜像',   crs:'WGS84',  note:'无偏移',
+    url:'https://tile.openstreetmap.de/{z}/{x}/{y}.png',
+    attr:'&copy; OpenStreetMap contributors' },
+  { key:'osmfr',    label:'OSM · 法国镜像(HOT)', crs:'WGS84', note:'无偏移',
+    url:'https://a.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png',
+    attr:'&copy; OpenStreetMap contributors, HOT' },
+
+  /* --- 需要自行申请 key 的源 --- */
+  { key:'baidu_vec', label:'百度 · 矢量',     crs:'BD-09',  note:'偏移最大', keyId:'baidu',
+    url:'https://maponline{s}.bdimg.com/tile/?qt=vtile&x={x}&y={y}&z={z}' +
+        '&styles=pl&scaler=1&udt=20240101&ak={k}',
+    sub:'0123', attr:'&copy; 百度地图' },
+  { key:'baidu_sat', label:'百度 · 卫星',     crs:'BD-09',  note:'偏移最大', keyId:'baidu',
+    url:'https://maponline{s}.bdimg.com/tile/?qt=vtile&x={x}&y={y}&z={z}' +
+        '&styles=sl&scaler=1&udt=20240101&ak={k}',
+    sub:'0123', attr:'&copy; 百度地图' },
+
   { key:'none',     label:'无底图',           crs:'-',      note:'' }
 ];
 const BASEMAP_MAP = {};
 BASEMAPS.forEach(b => { BASEMAP_MAP[b.key] = b; });
 
 function tdtLayer(type){
-  const k = CONFIG.tiandituKey;
+  const tk = CONFIG.keys.tdt || '';
   const mk = (layer) => L.tileLayer(
     `https://t{s}.tianditu.gov.cn/${layer}_w/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0` +
     `&LAYER=${layer}&STYLE=default&TILEMATRIXSET=w&FORMAT=tiles` +
-    `&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}&tk=${k}`,
-    { ...TILE_OPTS, keepBuffer: 1, subdomains: '01234567', maxZoom: 18,
-      attribution: '&copy; 天地图' });
-  return type === 'img'
-    ? L.layerGroup([mk('img'), mk('cia')])
-    : L.layerGroup([mk('vec'), mk('cva')]);
+    `&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}&tk=${tk}`,
+    { ...TILE_OPTS, tileSize: 256, keepBuffer: 1, subdomains: '01234567',
+      maxZoom: 18, attribution: '&copy; 天地图' });
+  if (type === 'img') return L.layerGroup([mk('img'), mk('cia')]);
+  if (type === 'ter') return L.layerGroup([mk('ter'), mk('cta')]);
+  return L.layerGroup([mk('vec'), mk('cva')]);
 }
 
-/* 按注册表创建底图图层。天地图特殊（WMTS + 底图/注记两层）。 */
+/* URL 里含 {k} 的替换成对应 key；没有 key 返回 null（调用方据此提示） */
+function applyKey(url, keyId){
+  if (url.indexOf('{k}') < 0) return url;
+  const v = keyId ? (CONFIG.keys[keyId] || '') : '';
+  if (!v) return null;
+  return url.replace(/\{k\}/g, encodeURIComponent(v));
+}
+
+function makeTileLayer(cfg){
+  const url = applyKey(cfg.url, cfg.keyId);
+  if (!url) return null;                       // 缺 key
+  const opts = { ...TILE_OPTS, tileSize: 256, keepBuffer: 1, maxZoom: 18,
+                 attribution: cfg.attr || '' };
+  if (cfg.sub) opts.subdomains = cfg.sub;
+  if (cfg.tms) opts.tms = true;
+  if (cfg.urlFn) opts.getTileUrl = tileUrlFn(url, cfg.sub, cfg.tms);
+  return L.tileLayer(url, opts);
+}
+
+/* 腾讯卫星、百度瓦片这类路径格式普通模板表达不了，用自定义 URL 函数。
+   腾讯卫星：sateTiles/{z}/{x>>4}/{y>>4}/{x}_{y}.jpg（y 为 TMS 序） */
+function tileUrlFn(url, sub, tms){
+  return function(coords){
+    const z = this._getZoomForUrl();
+    let x = coords.x, y = coords.y;
+    if (tms) y = this._globalTileRange.max.y - y;
+    let s = '';
+    if (sub) s = sub[(x + y) % sub.length];
+    let u = url.replace(/\{z\}/g, z).replace(/\{x\}/g, x).replace(/\{y\}/g, y);
+    u = u.replace(/\{s\}/g, s);
+    if (this.options.urlFn === 'tencent_sat'){
+      u = u.replace(/\{xd\}/g, x >> 4).replace(/\{yd\}/g, y >> 4)
+           .replace(/\{xy\}/g, x + '_' + y);
+    }
+    return u;
+  };
+}
+
+/* 按注册表创建底图图层。天地图特殊（WMTS，底图+注记两层）。 */
 function makeBasemap(key){
   const cfg = BASEMAP_MAP[key];
   if (!cfg || key === 'none') return null;
-  if (key.startsWith('tdt_')) return tdtLayer(key === 'tdt_img' ? 'img' : 'vec');
-  const opts = { ...TILE_OPTS, keepBuffer: 1, maxZoom: 18, attribution: cfg.attr || '' };
-  if (cfg.sub) opts.subdomains = cfg.sub;
-  if (cfg.tms) opts.tms = true;
-  return L.tileLayer(cfg.url, opts);
+  if (cfg.group){
+    const parts = cfg.group.map(makeBasemap).filter(Boolean);
+    return parts.length ? L.layerGroup(parts) : null;
+  }
+  if (key.startsWith('tdt_')) return tdtLayer(key === 'tdt_img' ? 'img' : key === 'tdt_ter' ? 'ter' : 'vec');
+  return makeTileLayer(cfg);
+}
+
+/* 该图源当前是否可用（有 key / 不需要 key） */
+function basemapUsable(key){
+  const cfg = BASEMAP_MAP[key];
+  if (!cfg) return false;
+  if (key === 'none') return true;
+  if (cfg.keyId && !CONFIG.keys[cfg.keyId]) return false;
+  if (cfg.group) return cfg.group.every(basemapUsable);
+  return true;
 }
 
 /* ---------------- 地图初始化 ---------------- */
@@ -572,24 +707,53 @@ let baseLayer = null;
 /* 底图选择下拉由注册表生成，避免 HTML 与 JS 两处维护同一份清单 */
 function buildBaseOptions(){
   const sel = document.getElementById('baseSel');
+  const prev = sel.value;
   sel.innerHTML = '';
   for (const b of BASEMAPS){
     const opt = document.createElement('option');
     opt.value = b.key;
-    opt.textContent = b.note ? `${b.label}（${b.note}）` : b.label;
+    const parts = [b.label];
+    if (b.note) parts.push(b.note);
+    if (b.keyId && !CONFIG.keys[b.keyId]) parts.push('需填 key');
+    opt.textContent = parts.length > 1 ? `${parts[0]}（${parts.slice(1).join('、')}）` : parts[0];
     sel.appendChild(opt);
   }
+  for (const c of CONFIG.custom){          // 用户自定义图源
+    const opt = document.createElement('option');
+    opt.value = 'custom:' + c.key;
+    opt.textContent = `${c.label}（自定义）`;
+    sel.appendChild(opt);
+  }
+  if (prev) sel.value = prev;
+}
+
+function currentBaseCfg(kind){
+  if (kind.indexOf('custom:') === 0){
+    const c = CONFIG.custom.find(v => 'custom:' + v.key === kind);
+    return c ? { key: kind, label: c.label, crs: '-', url: c.url,
+                 sub: c.sub, tms: c.tms } : {};
+  }
+  return BASEMAP_MAP[kind] || {};
 }
 
 function setBase(kind){
   if (baseLayer){ map.removeLayer(baseLayer); baseLayer = null; }
-  const cfg = BASEMAP_MAP[kind] || {};
-  const needKey = !!cfg.needKey;
-  document.getElementById('tdtWarn').classList.toggle('on', needKey && !CONFIG.tiandituKey);
-  /* GCJ-02 的图源都提示偏移，不管具体是哪家 */
-  document.getElementById('amapWarn').classList.toggle('on', cfg.crs === 'GCJ-02');
+  const cfg = currentBaseCfg(kind) || {};
+  const missingKey = cfg.keyId && !CONFIG.keys[cfg.keyId];
+  const warn = document.getElementById('tdtWarn');
+  if (missingKey){
+    const k = KEYS.find(v => v.id === cfg.keyId);
+    warn.innerHTML = '「' + cfg.label + '」需要 ' + (k ? k.label : cfg.keyId) +
+      '。<br>请在左侧「API Key」区填写后重新选择底图。' +
+      (k && k.link ? '<br><a href="' + k.link +
+        '" target="_blank" rel="noopener" style="color:#60a5fa">去申请 →</a>' : '');
+  }
+  warn.classList.toggle('on', !!missingKey);
+  /* GCJ-02 / BD-09 都提示偏移，不管具体是哪家 */
+  document.getElementById('amapWarn').classList.toggle(
+    'on', cfg.crs === 'GCJ-02' || cfg.crs === 'BD-09');
   if (kind === 'none') return;
-  baseLayer = makeBasemap(kind);
+  baseLayer = kind.indexOf('custom:') === 0 ? makeTileLayer(cfg) : makeBasemap(kind);
   if (baseLayer){
     /* 天地图返回的是 LayerGroup（底图+注记两层），给 LayerGroup 设 pane
        不会传递给子图层，必须逐层设置，否则子图层仍落在默认 tilePane。 */
@@ -1195,11 +1359,76 @@ document.getElementById('baseSel').onchange = e => {
   if (isMobile()) setDrawer(false);
 };
 
-document.getElementById('tdtSave').onclick = () => {
-  const k = document.getElementById('tdtKey').value.trim();
-  CONFIG.tiandituKey = k;
-  localStorage.setItem('uom_tdt_key', k);
-  setBase(document.getElementById('baseSel').value);
+/* ---------------- API Key 区 ---------------- */
+function buildKeyInputs(){
+  const box = document.getElementById('keyBox');
+  box.innerHTML = '';
+  for (const k of KEYS){
+    const wrap = document.createElement('div');
+    wrap.style.marginBottom = '8px';
+    const lab = document.createElement('div');
+    lab.className = 'hint';
+    lab.style.margin = '0 0 4px';
+    lab.innerHTML = '<b>' + k.label + '</b> — ' + k.hint +
+      (k.link ? ' <a href="' + k.link + '" target="_blank" rel="noopener" ' +
+        'style="color:#60a5fa">申请</a>' : '');
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;gap:6px';
+    const inp = document.createElement('input');
+    inp.type = 'text';
+    inp.value = CONFIG.keys[k.id] || '';
+    inp.placeholder = '粘贴 key';
+    inp.style.flex = '1';
+    const btn = document.createElement('button');
+    btn.className = 'primary';
+    btn.textContent = '保存';
+    btn.style.cssText = 'width:auto;flex:none';
+    const tip = document.createElement('div');
+    tip.className = 'hint';
+    tip.style.margin = '3px 0 0';
+    tip.textContent = CONFIG.keys[k.id] ? '已保存' : '未填写';
+    btn.onclick = () => {
+      saveKey(k.id, inp.value.trim());
+      tip.textContent = CONFIG.keys[k.id] ? '已保存' : '未填写';
+      buildBaseOptions();
+      setBase(document.getElementById('baseSel').value);
+    };
+    row.appendChild(inp); row.appendChild(btn);
+    wrap.appendChild(lab); wrap.appendChild(row); wrap.appendChild(tip);
+    box.appendChild(wrap);
+  }
+}
+
+/* ---------------- 自定义图源 ---------------- */
+document.getElementById('cstAdd').onclick = () => {
+  const url = document.getElementById('cstUrl').value.trim();
+  if (!url) { alert('请填写瓦片地址模板'); return; }
+  if (url.indexOf('{z}') < 0 || url.indexOf('{x}') < 0 || url.indexOf('{y}') < 0){
+    alert('地址模板必须包含 {z} {x} {y}');
+    return;
+  }
+  const keyName = document.getElementById('cstKey').value.trim();
+  let name = document.getElementById('cstName').value.trim() || '自定义图源';
+  const entry = {
+    key: 'u' + Date.now().toString(36),
+    label: name,
+    url: keyName ? (url + (url.indexOf('?') < 0 ? '?' : '&') + keyName + '={k}') : url
+  };
+  CONFIG.custom.push(entry);
+  saveCustom();
+  buildBaseOptions();
+  document.getElementById('baseSel').value = 'custom:' + entry.key;
+  setBase('custom:' + entry.key);
+  document.getElementById('cstName').value = '';
+  document.getElementById('cstUrl').value = '';
+  document.getElementById('cstKey').value = '';
+};
+document.getElementById('cstClear').onclick = () => {
+  if (!CONFIG.custom.length) return;
+  if (!confirm('确定删除全部自定义图源？')) return;
+  CONFIG.custom = [];
+  saveCustom();
+  buildBaseOptions();
 };
 
 document.getElementById('lyUom').onchange = e => {
@@ -1265,7 +1494,7 @@ setTimeout(async () => {
     zoom: map.getZoom(),
     center: [+map.getCenter().lat.toFixed(3), +map.getCenter().lng.toFixed(3)],
     basemap: document.getElementById('baseSel').value,
-    tdtKeySet: !!CONFIG.tiandituKey,
+    keysSet: Object.keys(CONFIG.keys).filter(k => CONFIG.keys[k]).join(',') || 'none',
     mapSize: [map.getSize().x, map.getSize().y],
     dpr: window.devicePixelRatio
   };
@@ -1395,10 +1624,10 @@ if (window.PerformanceObserver){
   requestAnimationFrame(tick);
 })();
 
+buildKeyInputs();
 buildBaseOptions();
-if (CONFIG.tiandituKey){
+if (CONFIG.keys.tdt){
   setBase('tdt_vec');
-  document.getElementById('tdtKey').value = CONFIG.tiandituKey;
 } else {
   /* 默认用 Esri 卫星影像：WGS84 与数据同系无偏移、无需 key，
      且是独立 CDN —— 天地图被限流时它不受影响 */
