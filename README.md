@@ -5,6 +5,30 @@
 
 ---
 
+## 在线版（GitHub Pages）
+
+**https://skl-666666.github.io/uom-airspace-viewer/**
+
+不需要装 Python、不需要跑本地服务，打开就能用。
+
+之所以能纯静态部署，是因为 **GitHub Pages 支持 HTTP Range 请求**——这是
+PMTiles 按需读取字节的前提。已实测确认：
+
+```
+HTTP/1.1 206 Partial Content
+Accept-Ranges: bytes
+Content-Range: bytes 0-126/89540467
+```
+
+并按真实访问序列端到端验证过（头部 → 根目录 → 叶目录 → 单张瓦片，
+每步内容与本地文件逐字节一致）。
+
+**在线版的限制**
+
+- 诊断上报（`POST /__diag` → `diag.log`）只在本地服务器上存在。
+  线上出错不会写进日志，排查性能问题需要在本地跑。
+- 数据仍是仓库里的静态快照，不会自动更新。
+
 ## 快速开始
 
 双击 `start.bat`，浏览器会自动打开 <http://127.0.0.1:8080/index.html>。
