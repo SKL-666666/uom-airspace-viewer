@@ -95,6 +95,9 @@ class RangeHandler(SimpleHTTPRequestHandler):
         if self.path.split("?")[0] == "/diag/probe":
             self._serve_basemap_probe()
             return
+        if self.path.split("?")[0] == "/diag/view":
+            self._serve_view_truth()
+            return
         path = self.translate_path(self.path)
         if os.path.isdir(path):
             path = os.path.join(path, "index.html")
@@ -158,6 +161,67 @@ class RangeHandler(SimpleHTTPRequestHandler):
                 if not head_only:
                     f.seek(start)
                     self._pump(f, length)
+
+    def _serve_view_truth(self):
+        """列出某个矩形范围内，哪些瓦片在档案里确实有数据。
+
+        用途：客户端可以把它与自己实际拿到的结果比对，从而判断
+        "界面上白掉的那一片"到底是「本来就没有适飞数据」还是
+        「客户端取数出了问题」。用已验证的 Python 读取器算，与客户端
+        各走一条独立路径。
+        """
+        from urllib.parse import parse_qs, urlparse
+        q = parse_qs(urlparse(self.path).query)
+        try:
+            z = int(q.get("z", ["13"])[0])
+            x0 = int(q.get("x0", ["0"])[0]); x1 = int(q.get("x1", ["-1"])[0])
+            y0 = int(q.get("y0", ["0"])[0]); y1 = int(q.get("y1", ["-1"])[0])
+        except ValueError:
+            self.send_error(400, "bad params")
+            return
+        if x1 < x0 or y1 < y0 or (x1 - x0 + 1) * (y1 - y0 + 1) > 4000:
+            self.send_error(400, "range too large or invalid")
+            return
+        try:
+            pm = _get_pmtiles()
+        except Exception as e:
+            self.send_error(500, "pmtiles unavailable: %s" % e)
+            return
+        have, lack = [], []
+        for x in range(x0, x1 + 1):
+            for y in range(y0, y1 + 1):
+                if pm.get_tile(z, x, y):
+                    have.append([x, y])
+                else:
+                    lack.append([x, y])
+        payload = json.dumps({
+            "z": z, "count": len(have) + len(lack),
+            "have": len(have), "lack": len(lack),
+            "haveList": have[:1500],
+        }, ensure_ascii=False).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(payload)
+
+_pmtiles_lock = __import__("threading").Lock()
+_pmtiles = None
+
+
+def _get_pmtiles():
+    """延迟加载 PMTiles 读取器（复用已验证的 pmtiles_tool）。"""
+    global _pmtiles
+    if _pmtiles is None:
+        with _pmtiles_lock:
+            if _pmtiles is None:
+                sys.path.insert(0, ROOT)
+                import pmtiles_tool
+                _pmtiles = pmtiles_tool.PMTiles(
+                    os.path.join(ROOT, "data", "uom-shifei.pmtiles"))
+    return _pmtiles
+
 
     # 允许代查的图源域名（避免变成任意 URL 代理）
     PROBE_HOSTS = (

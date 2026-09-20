@@ -289,6 +289,9 @@
     <div class="btnrow">
       <button id="diagCopy">复制诊断信息</button>
     </div>
+    <div class="btnrow">
+      <button id="diagView">对比当前视野</button>
+    </div>
     <textarea id="diagOut" readonly rows="7"
       style="margin-top:7px;display:none;width:100%;font-size:10px;
              font-family:ui-monospace,Menlo,Consolas,monospace;
@@ -355,7 +358,7 @@
    alpha 严格为 0 或 255，无抗锯齿中间值，因此判定无歧义。
    瓦片缺失 ⇒ 该区域无适飞空域。 */
 /* 构建标识：用来确认浏览器实际加载的是哪一版，排查缓存问题 */
-const BUILD = 'v16.3';
+const BUILD = 'v16.4';
 
 /* 加载层兜底：放在脚本最前面注册。
    之前把它放在末尾，一旦中间某处抛错就永远不执行，页面会卡死在
@@ -1695,6 +1698,55 @@ function collectDiag(){
        + '\n\n--- 事件留档 ---\n' + DIAG.join('\n');
 }
 
+/* 把当前视野的瓦片列表交给本地服务器（用已验证的 Python 读取器）
+   算出「哪些本该有数据」，再与客户端实际拿到的比对。
+   这能直接区分：界面上白掉的一片到底是「本来就没数据」还是「取数出了问题」。 */
+document.getElementById('diagView').onclick = async () => {
+  const btn = document.getElementById('diagView');
+  const out = document.getElementById('diagOut');
+  const show = (t) => { out.style.display = 'block'; out.value = t; };
+  if (!window.__localServer){
+    show('线上站点没有本地服务器，无法对比。\n请在本地（python serve.py）打开此页面。');
+    return;
+  }
+  btn.textContent = '对比中…';
+  try {
+    const z = Math.min(map.getZoom(), NATIVE_MAX_Z);
+    const b = map.getBounds();
+    const n = 1 << z;
+    const x0 = Math.floor((b.getWest() + 180) / 360 * n);
+    const x1 = Math.floor((b.getEast() + 180) / 360 * n);
+    const y0 = Math.floor((1 - Math.asinh(Math.tan(b.getNorth() * Math.PI / 180)) / Math.PI) / 2 * n);
+    const y1 = Math.floor((1 - Math.asinh(Math.tan(b.getSouth() * Math.PI / 180)) / Math.PI) / 2 * n);
+    const r = await fetch(`diag/view?z=${z}&x0=${x0}&x1=${x1}&y0=${y0}&y1=${y1}`);
+    const j = await r.json();
+    let missing = [], got = 0;
+    for (const [x, y] of j.haveList){
+      const v = tileStore.get(z + '/' + x + '/' + y);
+      if (v && v.data) got++;
+      else if (missing.length < 20) missing.push(z + '/' + x + '/' + y);
+    }
+    const lines = [
+      `当前视野 z${z}，范围 x${x0}-${x1} y${y0}-${y1}`,
+      `服务端（Python 读取器）判定：共 ${j.count} 块，有数据 ${j.have}，无数据 ${j.lack}`,
+      `客户端实际拿到数据：${got} 块`,
+      `应得而未得：${j.have - got} 块`,
+      '',
+      missing.length ? '缺失示例：' + missing.join(', ') : '（无缺失）',
+      '',
+      j.have - got > 0
+        ? '结论：存在应有数据却未拿到的情况 —— 取数链路有问题。'
+        : '结论：服务端说该有数据的，客户端都拿到了。界面上的白色区域属于「本来就没有适飞数据」。'
+    ];
+    show(lines.join('\n'));
+    report('VIEW_CHECK', { z, serverHave: j.have, clientGot: got,
+                           missing: j.have - got, serverLack: j.lack });
+  } catch (e) {
+    show('对比失败：' + ((e && e.message) || e));
+  }
+  btn.textContent = '对比当前视野';
+};
+
 document.getElementById('diagCopy').onclick = async () => {
   const text = collectDiag();
   const out = document.getElementById('diagOut');
@@ -1976,6 +2028,11 @@ if (window.PerformanceObserver){
   };
   requestAnimationFrame(tick);
 })();
+
+/* 探测本地服务器在不在：/diag/view 只有本地 Python 服务有 */
+fetch('diag/view?z=0&x0=0&x1=0&y0=0&y1=0', { cache: 'no-store' })
+  .then(r => { window.__localServer = r.ok; })
+  .catch(() => { window.__localServer = false; });
 
 buildKeyInputs();
 buildBaseOptions();
