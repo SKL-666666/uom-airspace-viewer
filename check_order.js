@@ -67,22 +67,18 @@ for (const c of checks) {
   console.log('  ' + c.name.padEnd(30) + '使用@' + u + '  依赖 ' + c.dep + '@' + d + '  ' + (ok ? '✓' : '✗ 声明前使用！'));
 }
 
-/* 额外检查：函数体是否疑似被截断（括号不配对的行附近有可疑缩进） */
-console.log('\n括号配平检查：');
-let brace = 0, paren = 0;
-for (let i = 0; i < lines.length; i++) {
-  const l = lines[i];
-  const stripped = l.replace(/\/\/.*$/, '').replace(/'[^']*'/g, "''").replace(/"[^"]*"/g, '""')
-                     .replace(/`[^`]*`/g, '``').replace(/\/\*[\s\S]*?\*\//g, '');
-  for (const ch of stripped) {
-    if (ch === '{') brace++;
-    else if (ch === '}') brace--;
-    else if (ch === '(') paren++;
-    else if (ch === ')') paren--;
-  }
+/* 语法有效性：交给 V8 真正解析一次。
+   这里原本是手工数括号，但正则字面量、字符串、注释里的括号会让它误报
+   （实测报了"花括号 +2 不配平"，而脚本其实是合法的，只是显示被截断）。
+   直接编译一次最可靠：能过就是能过，不能过会给出确切位置。 */
+console.log('\n语法解析（V8）:');
+try {
+  new (require('vm').Script)(js, { filename: 'inline-script.js' });
+  console.log('  解析通过  ✓');
+} catch (e) {
+  bad++;
+  console.log('  解析失败  ✗ ' + e.message);
 }
-console.log('  花括号净值 ' + brace + (brace === 0 ? '  ✓' : '  ✗ 不配平'));
-console.log('  圆括号净值 ' + paren + (paren === 0 ? '  ✓' : '  ✗ 不配平（字符串内括号会误报，仅供参考）'));
 
 console.log('\n' + (bad === 0 ? '=== 通过 ===' : '=== 发现 ' + bad + ' 处问题 ==='));
 process.exit(bad === 0 ? 0 : 1);

@@ -6,136 +6,152 @@
 <title>UOM 适飞空域查询</title>
 <link rel="stylesheet" href="lib/leaflet.css">
 <style>
+  /* ---------- 配色：暖中性浅色，不用深蓝 ----------
+     深色底 + 亮蓝强调是典型的"AI 生成"观感。这里换成制图工具常见的
+     浅灰底 + 白面板 + 深暖灰强调，靠细边框分层，不用发光阴影。 */
   :root{
-    color-scheme: dark;   /* 让浏览器从一开始就按深色渲染，避免加载瞬间白屏 */
-    --bg:#12161c; --panel:#1b2129; --panel2:#232b35; --line:#333d4a;
-    --tx:#e6edf5; --tx2:#8b98a8; --acc:#3b82f6;
-    --ok:#22c55e; --no:#ef4444; --warn:#f59e0b;
+    color-scheme: light;
+    --bg:#eceae6;      /* 页面外围 */
+    --panel:#ffffff;   /* 面板 */
+    --panel2:#f6f5f3;  /* 次级底 */
+    --line:#d7d3cd;    /* 主边框 */
+    --line2:#ebe8e3;   /* 分隔线 */
+    --tx:#22201d;      /* 主文字（暖近黑）*/
+    --tx2:#6f6a64;     /* 次要文字 */
+    --acc:#4a4641;     /* 强调（深暖灰，非蓝）*/
+    --ok:#3d7a4a; --no:#a63a34; --warn:#9a6a1e;
   }
   *{box-sizing:border-box}
-  /* html/body/#map 全部钉死深色：瓦片没加载出来时露出的也是深色而非白色。
-     Leaflet 自带 .leaflet-container{background:#ddd}，用 #map 的 id 选择器压过去。 */
-  /* 地图容器底色用中性浅灰，与底图瓦片同色系。
-     用深色（我之前的写法）会让瓦片之间因分数像素定位产生的 1px 缝隙
-     露出暗线，浅色瓦片 + 暗线 = 明显的「栅栏」感。
-     面板与页面外围仍是深色，只是地图画布这一层用浅色。 */
-  html{background:#0d1117}
-  html,body{margin:0;height:100%;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;background:#0d1117;color:var(--tx);overscroll-behavior:none}
+  html{background:var(--bg)}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--tx);
+            overscroll-behavior:none;font-size:13px;
+            font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
   #map{position:absolute;inset:0;background:#e5e3df}
   .leaflet-container{background:#e5e3df}
   .leaflet-pane,.leaflet-tile-pane{background:transparent}
-  /* 让瓦片互相轻微重叠，掩盖分数像素定位造成的缝隙 */
-  .leaflet-tile{outline:1px solid transparent}
+  /* 瓦片淡入：Leaflet 自带的淡入只作用于 popup，瓦片是硬切 */
+  .leaflet-tile{transition:opacity .18s linear}
+  .leaflet-map-pane{backface-visibility:hidden}
+  /* 缩短缩放动画（默认 0.25s）：快速滚轮时每格都会重启这个过渡 */
+  .leaflet-zoom-anim .leaflet-zoom-animated{
+    transition:transform .13s cubic-bezier(0,0,.25,1);
+  }
 
   /* ---------- 面板 ---------- */
-  .panel{position:absolute;z-index:1000;background:rgba(27,33,41,.94);backdrop-filter:blur(10px);
-         border:1px solid var(--line);border-radius:12px;box-shadow:0 8px 28px rgba(0,0,0,.45)}
-  #topbar{top:12px;left:12px;right:12px;display:flex;align-items:center;gap:10px;padding:10px 14px;flex-wrap:wrap}
-  #topbar h1{font-size:15px;margin:0;font-weight:600;letter-spacing:.3px}
-  .badge{font-size:11px;padding:3px 8px;border-radius:20px;background:var(--panel2);color:var(--tx2);border:1px solid var(--line);white-space:nowrap}
-  .badge.stale{background:rgba(245,158,11,.13);color:var(--warn);border-color:rgba(245,158,11,.35)}
+  .panel{position:absolute;z-index:1000;background:var(--panel);
+         border:1px solid var(--line);border-radius:5px;
+         box-shadow:0 1px 3px rgba(0,0,0,.07)}
+  #topbar{top:10px;left:10px;right:10px;display:flex;align-items:center;gap:8px;
+          padding:7px 11px;flex-wrap:wrap}
+  #topbar h1{font-size:13px;margin:0;font-weight:600;letter-spacing:.2px}
+  .badge{font-size:11px;padding:2px 7px;border-radius:3px;background:var(--panel2);
+         color:var(--tx2);border:1px solid var(--line);white-space:nowrap}
+  .badge.stale{background:#fdf6e8;color:var(--warn);border-color:#e8d5ac}
+  .badge.ok{background:#eef6ef;color:var(--ok);border-color:#c3ddc8}
+  .badge.err{background:#fbeeed;color:var(--no);border-color:#e8c4c1}
   .spacer{flex:1}
 
-  #side{top:64px;left:12px;width:250px;max-height:calc(100% - 84px);overflow-y:auto;padding:12px}
-  .sec{margin-bottom:14px}
-  .sec:last-child{margin-bottom:2px}
-  .sec h3{font-size:11px;margin:0 0 7px;color:var(--tx2);font-weight:600;letter-spacing:1px;text-transform:uppercase}
-  .row{display:flex;align-items:center;gap:8px;padding:5px 0;font-size:13px;cursor:pointer;user-select:none}
-  .row input[type=checkbox]{accent-color:var(--acc);width:15px;height:15px;cursor:pointer;flex:none}
-  .row .dot{width:9px;height:9px;border-radius:50%;flex:none}
-  .row .sub{font-size:11px;color:var(--tx2);margin-left:auto;flex:none}
-  input[type=range]{width:100%;accent-color:var(--acc);margin:4px 0 0}
-  select,button,input[type=text]{width:100%;background:var(--panel2);color:var(--tx);border:1px solid var(--line);
-        border-radius:7px;padding:7px 9px;font-size:13px;font-family:inherit;outline:none}
-  button{cursor:pointer}
-  button:hover{background:#2c3641}
-  button.primary{background:var(--acc);border-color:var(--acc)}
-  button.primary:hover{background:#2f70d8}
-  .hint{font-size:11px;color:var(--tx2);line-height:1.55;margin-top:6px}
-  .warnbox{font-size:11px;line-height:1.55;background:rgba(245,158,11,.1);border:1px solid rgba(245,158,11,.3);
-           color:#fbbf24;border-radius:7px;padding:7px 9px;margin-top:7px;display:none}
-  .warnbox.on{display:block}
+  /* ---------- 左侧栏（可折叠） ---------- */
+  #side{top:56px;left:10px;width:236px;max-height:calc(100% - 76px);overflow-y:auto}
+  .sec{border-bottom:1px solid var(--line2);margin:0;padding:0}
+  .sec:last-child{border-bottom:none}
+  .sec>summary{cursor:pointer;list-style:none;padding:9px 12px;font-size:11px;
+               font-weight:600;letter-spacing:.6px;color:var(--tx2);
+               user-select:none;position:relative;text-transform:uppercase}
+  .sec>summary::-webkit-details-marker{display:none}
+  .sec>summary::after{content:'+';position:absolute;right:11px;top:50%;
+                      transform:translateY(-50%);font-size:13px;font-weight:400}
+  .sec[open]>summary::after{content:'\2212'}
+  .sec>summary:hover{background:var(--panel2);color:var(--tx)}
+  .sec>*:not(summary){margin-left:12px;margin-right:12px}
+  .sec>*:last-child{margin-bottom:10px}
+
+  .row{display:flex;align-items:center;gap:7px;padding:5px 0;font-size:13px;
+       cursor:pointer;user-select:none}
+  .row input[type=checkbox]{accent-color:var(--acc);width:14px;height:14px;cursor:pointer;flex:none}
+  .row .dot{width:8px;height:8px;border-radius:50%;flex:none;border:1px solid rgba(0,0,0,.18)}
+  .row .sub{font-size:10.5px;color:var(--tx2);margin-left:auto;flex:none}
+  input[type=range]{width:100%;accent-color:var(--acc);margin:2px 0 6px;height:18px}
+  select,button,input[type=text]{width:100%;background:var(--panel);color:var(--tx);
+        border:1px solid var(--line);border-radius:4px;padding:5px 7px;
+        font-size:12.5px;font-family:inherit;outline:none}
+  select:focus,input[type=text]:focus{border-color:var(--acc)}
+  button{cursor:pointer;background:var(--panel)}
+  button:hover{background:var(--panel2)}
+  button.primary{background:var(--acc);border-color:var(--acc);color:#fff}
+  button.primary:hover{background:#3a3631;border-color:#3a3631}
+  input[type=text]+input[type=text]{margin-top:5px}
+  .btnrow{display:flex;gap:6px;margin-top:7px}
+  .btnrow>button{flex:1}
+  .hint,.note{font-size:10.5px;line-height:1.55;color:var(--tx2);margin:5px 0 0}
+  .note{margin-bottom:10px}
+  code{background:var(--panel2);border:1px solid var(--line2);border-radius:3px;
+       padding:0 3px;font-size:10px;word-break:break-all}
+  .warnbox{font-size:10.5px;line-height:1.55;background:#fdf6e8;border:1px solid #e8d5ac;
+           color:#7a5413;border-radius:4px;padding:6px 8px;margin-top:7px;display:none}
+  .warnbox.on{display:block;margin-bottom:10px}
+  .warnbox a{color:#7a5413}
 
   /* ---------- 结果卡片 ---------- */
-  #result{top:64px;right:12px;width:290px;max-height:calc(100% - 84px);overflow-y:auto;padding:13px;display:none}
+  #result{top:56px;right:10px;width:272px;max-height:calc(100% - 76px);
+          overflow-y:auto;padding:12px;display:none}
   #result.on{display:block}
-  #result h2{font-size:13px;margin:0 0 3px;font-weight:600}
-  .coord{font-size:11px;color:var(--tx2);font-family:ui-monospace,Menlo,Consolas,monospace;margin-bottom:10px}
-  .verdict{padding:11px;border-radius:9px;margin-bottom:10px;text-align:center}
-  .verdict .big{font-size:19px;font-weight:700;letter-spacing:.5px}
-  .verdict .small{font-size:11px;opacity:.85;margin-top:3px;line-height:1.5}
-  .v-ok{background:rgba(34,197,94,.15);border:1px solid rgba(34,197,94,.4);color:#4ade80}
-  .v-no{background:rgba(239,68,68,.15);border:1px solid rgba(239,68,68,.4);color:#f87171}
-  .v-unk{background:rgba(139,152,168,.15);border:1px solid rgba(139,152,168,.35);color:var(--tx2)}
-  .krow{display:flex;justify-content:space-between;gap:10px;font-size:12px;padding:5px 0;border-top:1px solid var(--line)}
+  #result h2{font-size:12px;margin:0 0 2px;font-weight:600}
+  .coord{font-size:11px;color:var(--tx2);margin-bottom:9px;
+         font-family:ui-monospace,Menlo,Consolas,monospace}
+  .verdict{padding:9px;border-radius:4px;margin-bottom:9px;text-align:center;border:1px solid}
+  .verdict .big{font-size:17px;font-weight:700;letter-spacing:.3px}
+  .verdict .small{font-size:10.5px;opacity:.9;margin-top:3px;line-height:1.5}
+  .v-ok{background:#eef6ef;border-color:#c3ddc8;color:var(--ok)}
+  .v-no{background:#fbeeed;border-color:#e8c4c1;color:var(--no)}
+  .v-unk{background:var(--panel2);border-color:var(--line);color:var(--tx2)}
+  .krow{display:flex;justify-content:space-between;gap:9px;font-size:11.5px;
+        padding:5px 0;border-top:1px solid var(--line2)}
   .krow .k{color:var(--tx2);flex:none}
   .krow .v{text-align:right;word-break:break-all}
-  .disclaim{font-size:10.5px;color:var(--tx2);line-height:1.6;margin-top:11px;padding-top:9px;border-top:1px solid var(--line)}
-  .close{position:absolute;top:10px;right:11px;background:none;border:none;color:var(--tx2);font-size:17px;padding:2px 6px;width:auto}
+  .disclaim{font-size:10px;color:var(--tx2);line-height:1.6;margin-top:10px;
+            padding-top:8px;border-top:1px solid var(--line2)}
+  .close{position:absolute;top:8px;right:9px;background:none;border:none;
+         color:var(--tx2);font-size:16px;padding:2px 5px;width:auto;line-height:1}
+  .close:hover{background:var(--panel2)}
 
-  #loading{position:absolute;inset:0;z-index:2000;background:var(--bg);display:flex;align-items:center;
-           justify-content:center;flex-direction:column;gap:12px;font-size:13px;color:var(--tx2)}
-  #loading .bar{width:200px;height:3px;background:var(--panel2);border-radius:2px;overflow:hidden}
-  #loading .bar i{display:block;height:100%;width:35%;background:var(--acc);border-radius:2px;
+  #loading{position:absolute;inset:0;z-index:2000;background:var(--bg);display:flex;
+           align-items:center;justify-content:center;flex-direction:column;
+           gap:11px;font-size:12.5px;color:var(--tx2)}
+  #loading .bar{width:180px;height:2px;background:var(--line);border-radius:1px;overflow:hidden}
+  #loading .bar i{display:block;height:100%;width:35%;background:var(--acc);
                   animation:sl 1.1s ease-in-out infinite}
   @keyframes sl{0%{transform:translateX(-100%)}100%{transform:translateX(330%)}}
 
-  /* 缩放/拖动时的渲染优化。
-     Leaflet 的缩放动画是对 .leaflet-map-pane 整体做 CSS transform，
-     所有图层共用这一个变换 —— 所以只要动画期间不插新瓦片请求，
-     两层就严格同步。will-change 让它走 GPU 合成。 */
-  .leaflet-map-pane{will-change:transform;backface-visibility:hidden}
-  /* 注意：不要给单个瓦片加 will-change —— 一屏几百个瓦片各自提升为
-     独立合成层会导致 GPU 内存暴涨、严重掉帧。这里不设。 */
-
-  /* 面板开关：桌面上隐藏（侧栏常驻），手机上显示 */
-  #menuBtn{display:none;width:auto;flex:none;padding:5px 10px;font-size:15px;line-height:1}
-  #backdrop{display:none;position:absolute;inset:0;z-index:900;background:rgba(0,0,0,.55)}
+  #menuBtn{display:none;width:auto;flex:none;padding:4px 9px;font-size:14px;line-height:1}
+  #backdrop{display:none;position:absolute;inset:0;z-index:900;background:rgba(0,0,0,.35)}
   #backdrop.on{display:block}
-
-  /* 错误横幅：任何未捕获错误都显示出来，不再静默失败 */
-  #errbar{display:none;position:absolute;top:60px;left:12px;right:12px;z-index:1500;
-          background:rgba(127,29,29,.95);border:1px solid #ef4444;color:#fecaca;
-          border-radius:10px;padding:10px 12px;font-size:12px;line-height:1.6;
-          max-height:34vh;overflow-y:auto;white-space:pre-wrap;
+  #errbar{display:none;position:absolute;top:56px;left:10px;right:10px;z-index:1500;
+          background:#fbeeed;border:1px solid #e8c4c1;color:#7d2a25;border-radius:5px;
+          padding:9px 11px;font-size:11.5px;line-height:1.6;max-height:34vh;
+          overflow-y:auto;white-space:pre-wrap;
           font-family:ui-monospace,Menlo,Consolas,monospace}
   #errbar.on{display:block}
-  #errbar b{color:#fff}
-  #errbar .x{position:absolute;top:6px;right:8px;cursor:pointer;color:#fecaca;font-size:15px}
-  #bdLayer.err{background:rgba(239,68,68,.18);color:#f87171;border-color:rgba(239,68,68,.5)}
-  #bdLayer.ok{background:rgba(34,197,94,.15);color:#4ade80;border-color:rgba(34,197,94,.4)}
+  #errbar .x{position:absolute;top:5px;right:8px;cursor:pointer;font-size:14px}
 
   /* ---------------- 手机竖屏 ---------------- */
   @media(max-width:760px), (max-height:520px) and (orientation:portrait){
-    /* 侧栏改抽屉：从左侧滑出，铺满高度 */
     #menuBtn{display:block}
-    #topbar{top:8px;left:8px;right:8px;padding:8px 10px;gap:7px;border-radius:10px}
-    #topbar h1{font-size:13px;order:-1;width:100%;margin-bottom:2px}
-    #topbar .badge{font-size:10px;padding:2px 6px}
-    #bdPos{display:none}   /* 手机上经纬度无意义，让位给数据日期 */
-
-    #side{
-      position:absolute;top:0;bottom:0;left:0;width:min(84vw,320px);
-      max-height:none;border-radius:0 14px 14px 0;z-index:1000;
-      transform:translateX(-102%);transition:transform .22s ease;
-      padding-top:14px;overflow-y:auto;
-      padding-bottom:calc(14px + env(safe-area-inset-bottom,0px));
-    }
+    #topbar{top:7px;left:7px;right:7px;padding:7px 9px;gap:6px}
+    #topbar h1{font-size:12.5px;order:-1;width:100%;margin-bottom:1px}
+    #topbar .badge{font-size:10px;padding:1px 5px}
+    #bdPos{display:none}
+    #side{position:absolute;top:0;bottom:0;left:0;width:min(84vw,320px);max-height:none;
+          border-radius:0 8px 8px 0;z-index:1000;transform:translateX(-102%);
+          transition:transform .22s ease;
+          padding-bottom:calc(12px + env(safe-area-inset-bottom,0px))}
     #side.on{transform:translateX(0)}
-
-    /* 结果卡片改底部抽屉，不挡地图 */
-    #result{left:8px;right:8px;width:auto;top:auto;max-height:56%;border-radius:14px;
-            bottom:calc(8px + env(safe-area-inset-bottom,0px))}
-
-    /* 触摸目标加大到 44px 以上 */
-    .row{padding:11px 0;font-size:14px}
-    .row input[type=checkbox]{width:19px;height:19px}
-    select,button,input[type=text]{padding:11px 10px;font-size:14px;min-height:44px}
-    input[type=range]{height:34px}
-    #side .sec h3{font-size:11px;margin-bottom:9px}
-    .hint,.warnbox{font-size:11.5px}
-    /* iOS 上 input 字号小于 16px 会触发自动放大 */
-    select,input[type=text],button{font-size:16px}
+    #result{left:7px;right:7px;width:auto;top:auto;max-height:56%;border-radius:8px;
+            bottom:calc(7px + env(safe-area-inset-bottom,0px))}
+    .row{padding:10px 0;font-size:13.5px}
+    .row input[type=checkbox]{width:18px;height:18px}
+    select,button,input[type=text]{padding:9px;font-size:16px;min-height:40px}
+    .sec>summary{padding:12px}
   }
 </style>
 </head>
@@ -158,124 +174,115 @@
 <div id="backdrop"></div>
 
 <div class="panel" id="side">
-  <div class="sec">
-    <h3>底图</h3>
+
+  <details class="sec" open>
+    <summary>图层</summary>
+    <label class="row"><input type="checkbox" id="lyUom" checked>
+      <span class="dot" style="background:#2980b9"></span>UOM 适飞空域
+      <span class="sub" id="uomZ">z0–13</span></label>
+    <input type="range" id="uomOp" min="0" max="100" value="65">
+    <label class="row"><input type="checkbox" id="lyDji" checked>
+      <span class="dot" style="background:#c47a1c"></span>大疆禁飞/限飞区
+      <span class="sub" id="djiN">—</span></label>
+    <div class="note">仅中国境内（含港澳台），境外区域不显示</div>
+    <label class="row"><input type="checkbox" id="lyZn" checked>
+      <span class="dot" style="background:#a33a3a"></span>ZB(SR)801 管制区
+      <span class="sub">非官方</span></label>
+  </details>
+
+  <details class="sec" open>
+    <summary>底图</summary>
     <select id="baseSel"></select>
     <div class="warnbox" id="tdtWarn"></div>
     <div class="warnbox" id="amapWarn">
-      该底图使用 GCJ-02 / BD-09 坐标系，与 UOM、大疆数据（WGS84）存在
-      <b>300–600 米偏移</b>，叠加会错位。仅作底图参考，不要用于核对边界。
+      该底图为 GCJ-02 / BD-09 坐标系，与 UOM、大疆数据（WGS84）存在
+      <b>300–600 米偏移</b>，叠加会错位。仅作参考，不要用于核对边界。
     </div>
-  </div>
+  </details>
 
-  <div class="sec">
-    <h3>API Key</h3>
-    <div id="keyBox"></div>
-    <div class="hint">
-      仅保存在本机浏览器（localStorage），只用于拼进对应图源的瓦片地址。
-      留空则该图源不可用，其余功能不受影响。
-    </div>
-  </div>
-
-  <div class="sec">
-    <h3>自定义图源</h3>
-    <input type="text" id="cstName" placeholder="名称（如 我的地图）">
-    <input type="text" id="cstUrl" placeholder="瓦片地址模板，含 {z} {x} {y}"
-           style="margin-top:6px">
-    <input type="text" id="cstKey" placeholder="key 参数名（可选，如 tk）"
-           style="margin-top:6px">
-    <div style="display:flex;gap:6px;margin-top:6px">
-      <button class="primary" id="cstAdd" style="flex:1">添加</button>
-      <button id="cstClear" style="flex:none;width:auto">清空全部</button>
-    </div>
-    <div class="hint">
-      地址模板示例：<br>
-      <code style="font-size:10px;word-break:break-all">https://t{s}.tianditu.gov.cn/vec_w/wmts?...&amp;tk={k}</code><br>
-      支持 <code>{s}</code> 子域、<code>{k}</code>（填了上面的 key 参数名才生效）。
-      坐标系未知，默认按无偏移处理。
-    </div>
-  </div>
-
-  <div class="sec">
-    <h3>图层</h3>
-    <label class="row"><input type="checkbox" id="lyUom" checked>
-      <span class="dot" style="background:#2980b9"></span>UOM 适飞空域 <span class="sub" id="uomZ">z0–13</span></label>
-    <input type="range" id="uomOp" min="0" max="100" value="65">
-
-    <label class="row"><input type="checkbox" id="lyDji" checked>
-      <span class="dot" style="background:#ee8815"></span>大疆禁飞/限飞区 <span class="sub" id="djiN">—</span></label>
-    <div class="hint" style="margin:-2px 0 6px 23px;font-size:10.5px">
-      仅中国境内（含港澳台）；境外区域不显示</div>
-
-    <label class="row"><input type="checkbox" id="lyZn" checked>
-      <span class="dot" style="background:#ef4444"></span>ZB(SR)801 管制区 <span class="sub">非官方</span></label>
-  </div>
-
-  <div class="sec">
-    <h3>快速定位省份</h3>
+  <details class="sec">
+    <summary>快速定位</summary>
     <select id="provSel">
       <option value="">选择省份…</option>
       <optgroup label="华北">
-        <option value="116.41,39.90,10">北京</option>
-        <option value="117.20,39.13,10">天津</option>
-        <option value="114.50,38.05,8">河北</option>
-        <option value="112.55,37.87,8">山西</option>
-        <option value="111.75,40.84,7">内蒙古</option>
+      <option value="116.41,39.90,10">北京</option>
+      <option value="117.20,39.13,10">天津</option>
+      <option value="114.50,38.05,8">河北</option>
+      <option value="112.55,37.87,8">山西</option>
+      <option value="111.75,40.84,7">内蒙古</option>
       </optgroup>
       <optgroup label="东北">
-        <option value="123.43,41.81,8">辽宁</option>
-        <option value="125.32,43.90,8">吉林</option>
-        <option value="126.63,45.75,7">黑龙江</option>
+      <option value="123.43,41.81,8">辽宁</option>
+      <option value="125.32,43.90,8">吉林</option>
+      <option value="126.63,45.75,7">黑龙江</option>
       </optgroup>
       <optgroup label="华东">
-        <option value="121.47,31.23,10">上海</option>
-        <option value="118.78,32.06,8">江苏</option>
-        <option value="120.15,30.27,8">浙江</option>
-        <option value="117.28,31.86,8">安徽</option>
-        <option value="119.30,26.08,8">福建</option>
-        <option value="115.89,28.68,8">江西</option>
-        <option value="117.00,36.65,8">山东</option>
+      <option value="121.47,31.23,10">上海</option>
+      <option value="118.78,32.06,8">江苏</option>
+      <option value="120.15,30.27,8">浙江</option>
+      <option value="117.28,31.86,8">安徽</option>
+      <option value="119.30,26.08,8">福建</option>
+      <option value="115.89,28.68,8">江西</option>
+      <option value="117.00,36.65,8">山东</option>
       </optgroup>
       <optgroup label="华中">
-        <option value="113.65,34.76,8">河南</option>
-        <option value="114.30,30.60,8">湖北</option>
-        <option value="112.98,28.19,8">湖南</option>
+      <option value="113.65,34.76,8">河南</option>
+      <option value="114.30,30.60,8">湖北</option>
+      <option value="112.98,28.19,8">湖南</option>
       </optgroup>
       <optgroup label="华南">
-        <option value="113.26,23.13,8">广东</option>
-        <option value="108.32,22.82,7">广西</option>
-        <option value="110.35,20.02,8">海南</option>
+      <option value="113.26,23.13,8">广东</option>
+      <option value="108.32,22.82,7">广西</option>
+      <option value="110.35,20.02,8">海南</option>
       </optgroup>
       <optgroup label="西南">
-        <option value="106.55,29.56,8">重庆</option>
-        <option value="104.07,30.57,7">四川</option>
-        <option value="106.71,26.57,8">贵州</option>
-        <option value="102.71,25.05,7">云南</option>
-        <option value="91.13,29.65,7">西藏</option>
+      <option value="106.55,29.56,8">重庆</option>
+      <option value="104.07,30.57,7">四川</option>
+      <option value="106.71,26.57,8">贵州</option>
+      <option value="102.71,25.05,7">云南</option>
+      <option value="91.13,29.65,7">西藏</option>
       </optgroup>
       <optgroup label="西北">
-        <option value="108.94,34.34,8">陕西</option>
-        <option value="103.82,36.06,7">甘肃</option>
-        <option value="101.78,36.62,7">青海</option>
-        <option value="106.28,38.47,8">宁夏</option>
-        <option value="87.62,43.83,6">新疆</option>
-      </optgroup>
-      <optgroup label="港澳台">
-        <option value="114.17,22.32,10">香港</option>
-        <option value="113.55,22.20,11">澳门</option>
-        <option value="121.51,25.04,8">台湾</option>
+      <option value="108.94,34.34,8">陕西</option>
+      <option value="103.82,36.06,7">甘肃</option>
+      <option value="101.78,36.62,7">青海</option>
+      <option value="106.28,38.47,8">宁夏</option>
+      <option value="87.62,43.83,6">新疆</option>
       </optgroup>
     </select>
-  </div>
+  </details>
 
-  <div class="sec">
-    <h3>操作</h3>
-    <div class="hint">点击地图任意位置查询该点空域状态。</div>
-    <div style="display:flex;gap:6px;margin-top:8px">
-      <button id="btnLoc" style="flex:1">定位我的位置</button>
-      <button id="btnClear" style="flex:1">清除标记</button>
+  <details class="sec">
+    <summary>操作</summary>
+    <div class="note">点击地图任意位置查询该点空域状态</div>
+    <div class="btnrow">
+      <button id="btnLoc">定位我的位置</button>
+      <button id="btnClear">清除标记</button>
     </div>
-  </div>
+  </details>
+
+  <details class="sec">
+    <summary>API Key</summary>
+    <div id="keyBox"></div>
+    <div class="note">
+      仅保存在本机浏览器，只用于拼进对应图源的地址。留空则该图源不可用。
+    </div>
+  </details>
+
+  <details class="sec">
+    <summary>自定义图源</summary>
+    <input type="text" id="cstName" placeholder="名称">
+    <input type="text" id="cstUrl" placeholder="瓦片地址模板，含 {z} {x} {y}">
+    <input type="text" id="cstKey" placeholder="key 参数名（可选，如 tk）">
+    <div class="btnrow">
+      <button id="cstAdd">添加</button>
+      <button id="cstClear">清空全部</button>
+    </div>
+    <div class="note">
+      支持 <code>{s}</code> 子域、<code>{k}</code> 注入 key。坐标系未知，默认按无偏移处理。
+    </div>
+  </details>
+
 </div>
 
 <div class="panel" id="result">
@@ -309,7 +316,7 @@
    alpha 严格为 0 或 255，无抗锯齿中间值，因此判定无歧义。
    瓦片缺失 ⇒ 该区域无适飞空域。 */
 /* 构建标识：用来确认浏览器实际加载的是哪一版，排查缓存问题 */
-const BUILD = 'v15.1-maps-keys';
+const BUILD = 'v15.2-ui-perf';
 
 /* 加载层兜底：放在脚本最前面注册。
    之前把它放在末尾，一旦中间某处抛错就永远不执行，页面会卡死在
@@ -798,6 +805,11 @@ try {
         console.warn('Worker 内 PMTiles 初始化失败:', m.error);
         report('WORKER_HEADER_FAIL', String(m.error));
       }
+      return;
+    }
+    /* Worker 侧统计：定位"取数慢在哪"（含 no-store 是否已关闭） */
+    if (m && m.stat){
+      report('WORKER_STAT', m);
       return;
     }
     const p = workerPending.get(m.id);

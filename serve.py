@@ -106,7 +106,8 @@ class RangeHandler(SimpleHTTPRequestHandler):
         no_cache = ext in (".html", ".js", ".css", ".json", ".geojson")
 
         with f:
-            size = os.fstat(f.fileno()).st_size
+            st = os.fstat(f.fileno())
+            size = st.st_size
             ctype = self.guess_type(path)
             rng = self.headers.get("Range")
             start = end = None
@@ -134,7 +135,7 @@ class RangeHandler(SimpleHTTPRequestHandler):
                 self.send_header("Content-Type", ctype)
                 self.send_header("Content-Length", str(size))
                 self.send_header("Accept-Ranges", "bytes")
-                self._cache_headers(no_cache)
+                self._cache_headers(no_cache, st, size)
                 self.end_headers()
                 if not head_only:
                     self._pump(f, size)
@@ -145,19 +146,28 @@ class RangeHandler(SimpleHTTPRequestHandler):
                 self.send_header("Content-Length", str(length))
                 self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
                 self.send_header("Accept-Ranges", "bytes")
-                self._cache_headers(no_cache)
+                self._cache_headers(no_cache, st, size)
                 self.end_headers()
                 if not head_only:
                     f.seek(start)
                     self._pump(f, length)
 
-    def _cache_headers(self, no_cache):
+    def _cache_headers(self, no_cache, st=None, size=None):
         if no_cache:
             self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
             self.send_header("Pragma", "no-cache")
             self.send_header("Expires", "0")
-        else:
-            self.send_header("Cache-Control", "public, max-age=86400")
+            return
+        self.send_header("Cache-Control", "public, max-age=86400")
+        # 分片(206)响应要被浏览器正确缓存，必须有校验器：
+        # 否则 Chrome 拼接分片时无法判断一致性，可能拿到错位数据
+        # （pmtiles 库因此在 Windows+Chromium 上强制 no-store 绕开该问题）。
+        # 这里给出 Last-Modified + ETag，让分片缓存变得可靠，
+        # 客户端也就可以安全地关闭 no-store。
+        if st is not None:
+            self.send_header("Last-Modified", self.date_time_string(st.st_mtime))
+            self.send_header(
+                "ETag", '"%x-%x"' % (int(st.st_mtime), size or 0))
 
     def _pump(self, f, length):
         remaining = length
