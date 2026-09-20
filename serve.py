@@ -39,6 +39,23 @@ MIME = {
 RANGE_RE = re.compile(r"bytes=(\d*)-(\d*)$")
 
 
+_pmtiles_lock = __import__("threading").Lock()
+_pmtiles = None
+
+
+def _get_pmtiles():
+    """延迟加载 PMTiles 读取器（复用已验证的 pmtiles_tool）。"""
+    global _pmtiles
+    if _pmtiles is None:
+        with _pmtiles_lock:
+            if _pmtiles is None:
+                sys.path.insert(0, ROOT)
+                import pmtiles_tool
+                _pmtiles = pmtiles_tool.PMTiles(
+                    os.path.join(ROOT, "data", "uom-shifei.pmtiles"))
+    return _pmtiles
+
+
 class RangeHandler(SimpleHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     server_version = "UOMViewer/1.0"
@@ -205,23 +222,6 @@ class RangeHandler(SimpleHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(payload)
-
-_pmtiles_lock = __import__("threading").Lock()
-_pmtiles = None
-
-
-def _get_pmtiles():
-    """延迟加载 PMTiles 读取器（复用已验证的 pmtiles_tool）。"""
-    global _pmtiles
-    if _pmtiles is None:
-        with _pmtiles_lock:
-            if _pmtiles is None:
-                sys.path.insert(0, ROOT)
-                import pmtiles_tool
-                _pmtiles = pmtiles_tool.PMTiles(
-                    os.path.join(ROOT, "data", "uom-shifei.pmtiles"))
-    return _pmtiles
-
 
     # 允许代查的图源域名（避免变成任意 URL 代理）
     PROBE_HOSTS = (
