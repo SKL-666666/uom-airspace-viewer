@@ -355,7 +355,7 @@
    alpha 严格为 0 或 255，无抗锯齿中间值，因此判定无歧义。
    瓦片缺失 ⇒ 该区域无适飞空域。 */
 /* 构建标识：用来确认浏览器实际加载的是哪一版，排查缓存问题 */
-const BUILD = 'v16.1';
+const BUILD = 'v16.2';
 
 /* 加载层兜底：放在脚本最前面注册。
    之前把它放在末尾，一旦中间某处抛错就永远不执行，页面会卡死在
@@ -404,12 +404,34 @@ window.addEventListener('unhandledrejection', e => {
 
 /* UOM 适飞层加载计数：直接显示在顶栏，能立刻看出瓦片到底有没有在加载 */
 let uomTiles = 0, uomTileErrs = 0, uomStatTimer = null;
+/* 攒批状态。声明放在这里（而不是紧邻 batchFlush）是为了让
+   updateLayerBadge 能安全引用 —— 它定义更早，虽然实际调用时机在之后，
+   但 typeof 对处于 TDZ 的变量同样会抛错，位置前移最省心。 */
+const batchPending = new Map();     // key -> {z, x, y, resolvers:[{resolve,reject}]}
+const inflightBatches = new Map();  // id -> [resolvers[], ...]
+
+let badgeTimer = null;
+
+/* 合并刷新徽章：每次攒批/回包都刷新一次状态，让"加载中"能显示出来 */
+function scheduleBadgeRefresh(){
+  if (badgeTimer) return;
+  badgeTimer = setTimeout(() => { badgeTimer = null; updateLayerBadge(); }, 120);
+}
+
 function updateLayerBadge(){
   const el = document.getElementById('bdLayer');
   if (!el) return;
   if (!uomReady){
     el.textContent = '适飞层 未就绪';
     el.className = 'badge err';
+    return;
+  }
+  /* 有请求在飞时明确显示出来：地图上暂时空白时，
+     用户能知道"是在加载"而不是"卡住了"。观感差别很大。 */
+  const inflight = inflightBatches.size > 0 || batchPending.size > 0;
+  if (inflight){
+    el.textContent = `适飞层 加载中… (${uomTiles} 块)`;
+    el.className = 'badge';
     return;
   }
   el.textContent = uomTileErrs
@@ -984,6 +1006,7 @@ try {
           else res.resolve(r ? r.data : null);
         }
       });
+      scheduleBadgeRefresh();
       return;
     }
     /* 单张（回退路径） */
@@ -1012,8 +1035,6 @@ try {
 /* 每个瓦片键存一个 resolver 数组：同一批里同一瓦片被请求多次时，
    不能覆盖前一个 resolver —— 否则那个 Promise 永远不完成，
    表现为"某块瓦片永远不显示"，而且完全没有报错。 */
-const batchPending = new Map();     // key -> {z, x, y, resolvers:[{resolve,reject}]}
-const inflightBatches = new Map();  // id -> [resolvers[], ...]（与 tiles 顺序对齐）
 let batchTimer = null;
 
 function batchFlush(){
@@ -1028,6 +1049,7 @@ function batchFlush(){
   const id = ++workerSeq;
   inflightBatches.set(id, resolvers);
   tileWorker.postMessage({ batch: true, id, tiles: items });
+  scheduleBadgeRefresh();
 }
 
 function workerGetTile(z, x, y){
@@ -1053,17 +1075,20 @@ try {
 }
 
 /* 取一块瓦片的原始字节：优先 Worker，失败回退主线程 */
+/* 取一块瓦片的原始字节。
+   返回值语义必须分清，否则会出大问题：
+     Uint8Array/Buffer -> 拿到了
+     null              -> 档案里确实没有这块（该处无适飞数据）
+     抛异常            -> 取数【失败】，属于临时性问题，必须可重试
+   之前这里把失败也吞成 null，结果失败会被当成"无数据"永久缓存，
+   那块瓦片再也不会重新请求 —— 表现为"不动地图时空白区域一直不刷新"。
+   另外：单个瓦片失败不该把 Worker 永久降级，只记 Worker 级别的错误。 */
 async function fetchTileBytes(z, x, y){
   if (tileWorker && !workerFailed){
-    try {
-      return await workerGetTile(z, x, y);
-    } catch(e){
-      report('WORKER_FETCH_FAIL', String((e && e.message) || e));
-      workerFailed = true;             // 之后走回退，不再反复报错
-    }
+    return await workerGetTile(z, x, y);   // 失败直接抛出，交给上层重试
   }
   if (!pm) return null;
-  const res = await pm.getZxy(z, x, y);
+  const res = await pm.getZxy(z, x, y);    // 失败会抛
   return (res && res.data && res.data.byteLength) ? res.data : null;
 }
 
@@ -1094,16 +1119,24 @@ async function getTileEntry(z, x, y){
   if (tileInflight.has(key)) return tileInflight.get(key);
 
   const p = (async () => {
-    let entry = null;
+    let entry, failed = false;
     try {
       const data = await fetchTileBytes(z, x, y);
-      if (data && data.byteLength) entry = { data };
-    } catch(e){ entry = null; }
-    tileStore.set(key, entry);            // 找不到也缓存 null，避免反复查
-    while (tileStore.size > TILE_STORE_MAX) {
-      tileStore.delete(tileStore.keys().next().value);
+      entry = (data && data.byteLength) ? { data } : null;   // null = 确实无数据
+    } catch(e){
+      failed = true;
+      entry = null;
     }
     tileInflight.delete(key);
+    /* 只有「确定的结果」才进缓存。失败绝不能缓存成 null ——
+       否则会被当成"此处无数据"，那块瓦片永远不再请求。 */
+    if (!failed){
+      tileStore.set(key, entry);
+      while (tileStore.size > TILE_STORE_MAX) {
+        tileStore.delete(tileStore.keys().next().value);
+      }
+    }
+    if (failed) throw new Error('tile fetch failed');
     return entry;
   })();
 
@@ -1140,19 +1173,40 @@ const UomLayer = L.GridLayer.extend({
       PROF.tileMs += _dt; PROF.tileN++;
       if (_dt > PROF.tileMax) PROF.tileMax = _dt;
     }).catch(err => {
-      /* 关键：这里绝不能静默吞掉。之前写成 .catch(()=>done(null,img))
-         导致取数失败时既不计数也不报错，页面上完全看不出问题。
-         现在计数 + 上报具体原因（只在头几次上报，避免刷屏）。 */
       bumpUomTiles(false);
       if (uomTileErrs <= 3) {
         report('TILE_FETCH_FAIL',
           `z${coords.z}/${coords.x}/${coords.y} :: ${(err && err.message) || err}`);
       }
       done(null, img);
+      /* 重试。Leaflet 不会重试失败的瓦片 —— 失败那一块就一直是空白，
+         只有移动地图才会重新请求。而"不动地图时空白区一直不刷新"
+         正是这个问题。这里自己做有限次退避重试。 */
+      scheduleTileRetry(img, coords);
     });
     return img;
   }
 });
+
+/* 失败瓦片重试：退避 400/800/1600ms，最多 3 次。
+   img 已被 Leaflet 标记为 loaded，这里只替换它的 src 让它显出来，
+   不需要再通知 Leaflet。元素被回收（移出 DOM）后就不再重试。 */
+function scheduleTileRetry(img, coords){
+  const n = (img._uomRetry = (img._uomRetry || 0) + 1);
+  if (n > 3) return;
+  if (!img.isConnected) return;
+  setTimeout(() => {
+    if (!img.isConnected) return;
+    getTileEntry(coords.z, coords.x, coords.y).then(entry => {
+      if (!entry || !img.isConnected) return;
+      const url = URL.createObjectURL(new Blob([entry.data], { type:'image/png' }));
+      img.onload = () => URL.revokeObjectURL(url);
+      img.onerror = () => { URL.revokeObjectURL(url); scheduleTileRetry(img, coords); };
+      img.src = url;
+      PROF.retryOk = (PROF.retryOk || 0) + 1;
+    }).catch(() => scheduleTileRetry(img, coords));
+  }, 400 * n);
+}
 
 if (pm){
   try {
@@ -1247,8 +1301,9 @@ async function prefetchNeighborZooms(){
 
   /* 分批并发，每批之间让出主线程；视野一变（token 变化）立即放弃 */
   const BATCH = 6;
+  const MAX_TILES = 150;                 // 上限：视野极大时别一次拉太多
   let done = 0;
-  for (let i = 0; i < list.length; i += BATCH){
+  for (let i = 0; i < list.length && done < MAX_TILES; i += BATCH){
     if (token !== prefetchToken) return;
     await Promise.all(list.slice(i, i + BATCH).map(k => {
       const parts = k.split('/');
@@ -1265,7 +1320,9 @@ async function prefetchNeighborZooms(){
 map.on('moveend zoomend', () => {
   prefetchToken++;                       // 取消进行中的预取
   clearTimeout(prefetchTimer);
-  prefetchTimer = setTimeout(prefetchNeighborZooms, 600);
+  /* 350ms：早点开始，让用户下次缩放时瓦片已经在缓存里。
+     太短会和正在进行的加载抢连接，太长则来不及。 */
+  prefetchTimer = setTimeout(prefetchNeighborZooms, 350);
 });
 
 updateLayerBadge();
