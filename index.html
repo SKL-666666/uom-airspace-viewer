@@ -293,7 +293,16 @@
    alpha 严格为 0 或 255，无抗锯齿中间值，因此判定无歧义。
    瓦片缺失 ⇒ 该区域无适飞空域。 */
 /* 构建标识：用来确认浏览器实际加载的是哪一版，排查缓存问题 */
-const BUILD = 'v14-cn';
+const BUILD = 'v14.1-cn';
+
+/* 加载层兜底：放在脚本最前面注册。
+   之前把它放在末尾，一旦中间某处抛错就永远不执行，页面会卡死在
+   "正在加载地图数据…"。现在无论后面出什么问题，加载层都会按时消失，
+   错误则通过错误横幅显示出来 —— 宁可显示错误，也不要假死。 */
+setTimeout(function(){
+  var el = document.getElementById('loading');
+  if (el) el.style.display = 'none';
+}, 4000);
 
 /* 诊断上报：把浏览器里的真实状态回传到本地服务器，落盘成 diag.log。
    排查时截图里的文字读不出来，直接回传文本最省事。 */
@@ -431,9 +440,6 @@ function profTagDjiRenderer(r){
   return r;
 }
 
-/* 视图事件计数：判断"卡"是否伴随大量 moveend/zoomend */
-map.on('moveend zoomend viewreset', () => { PROF.viewN++; });
-
 const UOM_DATA_DATE = '2026-05-23';
 const DJI_DATA_DATE = '2026-06-03';
 
@@ -509,6 +515,11 @@ const map = L.map('map', {
    会导致底图遮住 UOM 图层，所以分层：
      底图 200 < UOM 300 < 大疆/管制区 400（overlayPane 默认值） */
 map.createPane('basePane').style.zIndex = 200;
+
+/* 视图事件计数：判断"卡"是否伴随大量 moveend/zoomend。
+   注意：必须在 map 创建之后注册 —— map 用 const 声明，在声明前访问
+   会触发 TDZ 报错（之前就是这个问题导致脚本中断、页面卡在加载层）。 */
+map.on('moveend zoomend viewreset', () => { PROF.viewN++; });
 map.createPane('uomPane').style.zIndex = 300;
 
 /* 底图失败重试：只重试失败的那一块瓦片，绝不整屏重绘。
