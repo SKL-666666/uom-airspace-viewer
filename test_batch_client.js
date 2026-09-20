@@ -39,6 +39,13 @@ function workerGetTile(z, x, y){
 
 /* 模拟 Worker 回包 */
 function deliver(m){
+  /* 批量整体失败：{id, error}，没有 results —— 必须立刻拒绝 */
+  if (m.error && inflightBatches.has(m.id)){
+    const rs = inflightBatches.get(m.id);
+    inflightBatches.delete(m.id);
+    for (const list of rs) for (const r of list) r.reject(new Error(m.error));
+    return;
+  }
   if (m.results){
     const rs = inflightBatches.get(m.id);
     if (!rs) return;
@@ -123,6 +130,29 @@ function deliver(m){
   const v4 = await Promise.all(p4);
   ok(v4[0] !== null && v4[1] !== null,
      '重复请求的两个 Promise 都完成（resolver 不覆盖，否则会丢一块瓦片）');
+
+  /* 6. 批量整体失败要立刻拒绝，不能等 15 秒超时 */
+  console.log('  用例 6：Worker 返回批量错误（无 results）');
+  sent.length = 0; batchPending.clear(); inflightBatches.clear();
+  const t0 = Date.now();
+  const p6 = [workerGetTile(13, 6900, 3100), workerGetTile(13, 6901, 3100)];
+  await new Promise(r => setTimeout(r, 20));
+  deliver({ id: sent[0].id, error: '模拟批量失败' });
+  let rejCount = 0;
+  await Promise.all(p6.map(x => x.catch(() => { rejCount++; })));
+  const dt = Date.now() - t0;
+  ok(rejCount === 2, `两个 Promise 都被拒绝（${rejCount}/2）`);
+  ok(dt < 2000, `立即拒绝，耗时 ${dt}ms（而不是等 15 秒超时）`);
+
+  /* 7. 单项错误只拒绝那一项 */
+  console.log('  用例 7：单项错误');
+  sent.length = 0; batchPending.clear(); inflightBatches.clear();
+  const p7 = [workerGetTile(13, 6910, 3100)];
+  await new Promise(r => setTimeout(r, 20));
+  deliver({ id: sent[0].id, results: [{ z: 13, x: 6910, y: 3100, error: 'worker unavailable' }] });
+  let rej7 = false;
+  await p7[0].catch(() => { rej7 = true; });
+  ok(rej7, '单项错误被正确拒绝');
 
   console.log(`\n=== ${fail === 0 ? '全部通过' : fail + ' 项失败'} ===`);
   process.exit(fail === 0 ? 0 : 1);

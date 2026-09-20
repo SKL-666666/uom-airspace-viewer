@@ -358,7 +358,7 @@
    alpha 严格为 0 或 255，无抗锯齿中间值，因此判定无歧义。
    瓦片缺失 ⇒ 该区域无适飞空域。 */
 /* 构建标识：用来确认浏览器实际加载的是哪一版，排查缓存问题 */
-const BUILD = 'v16.4';
+const BUILD = 'v16.5';
 
 /* 加载层兜底：放在脚本最前面注册。
    之前把它放在末尾，一旦中间某处抛错就永远不执行，页面会卡死在
@@ -437,9 +437,11 @@ function updateLayerBadge(){
     el.className = 'badge';
     return;
   }
-  el.textContent = uomTileErrs
-    ? `适飞层 ${uomTiles} 块 / ${uomTileErrs} 失败`
-    : `适飞层 ${uomTiles} 块`;
+  let txt = `适飞层 有数据 ${uomTiles} 块`;
+  if (uomNoData) txt += ` / 空 ${uomNoData}`;
+  if (uomTileErrs) txt += ` / 失败 ${uomTileErrs}`;
+  el.textContent = txt;
+  el.title = '「空」表示该处本来就没有适飞空域数据，不是加载失败';
   el.className = 'badge ' + (uomTileErrs ? 'err' : (uomTiles > 0 ? 'ok' : ''));
 }
 function bumpUomTiles(ok){
@@ -1006,6 +1008,20 @@ try {
       report('WORKER_STAT', m);
       return;
     }
+    /* 批量整体失败：Worker 发的是 {id, error}，没有 results。
+       若不在这里处理，会掉进下面的单张分支（那里查不到这个 id 就
+       直接 return），这批 Promise 只能等 15 秒超时才被拒绝 ——
+       表现为"失败后要愣 15 秒才开始重试"。 */
+    if (m && m.error && inflightBatches.has(m.id)){
+      const rs = inflightBatches.get(m.id);
+      inflightBatches.delete(m.id);
+      for (const list of rs){
+        for (const r of list) r.reject(new Error(m.error));
+      }
+      scheduleBadgeRefresh();
+      return;
+    }
+
     /* 批量结果 */
     if (m && m.results){
       const rs = inflightBatches.get(m.id);
@@ -1061,7 +1077,16 @@ function batchFlush(){
   batchPending.clear();
   const id = ++workerSeq;
   inflightBatches.set(id, resolvers);
-  tileWorker.postMessage({ batch: true, id, tiles: items });
+  try {
+    tileWorker.postMessage({ batch: true, id, tiles: items });
+  } catch(e){
+    /* Worker 不可用时 postMessage 会抛错，而且是在定时器里抛，
+       没人接住。这里主动拒绝这批请求，让重试逻辑接管。 */
+    inflightBatches.delete(id);
+    for (const list of resolvers){
+      for (const r of list) r.reject(new Error("worker unavailable"));
+    }
+  }
   /* 超时保护：Worker 若因任何原因（脚本异常、被浏览器回收、消息丢失）
      没有回包，这些 Promise 会**永远挂着** —— 对应的瓦片一直空白，
      而且没有任何报错、也不会触发重试。这是最难查的一类故障。
@@ -1114,7 +1139,10 @@ async function fetchTileBytes(z, x, y){
   if (tileWorker && !workerFailed){
     return await workerGetTile(z, x, y);   // 失败直接抛出，交给上层重试
   }
-  if (!pm) return null;
+  /* 两个数据源都不可用时要抛错，不能返回 null ——
+     null 的语义是"这里确实没有数据"，会被缓存下来，
+     于是整个图层空白且永远不重试，而看不出是数据源坏了。 */
+  if (!pm) throw new Error('no tile source available');
   const res = await pm.getZxy(z, x, y);    // 失败会抛
   return (res && res.data && res.data.byteLength) ? res.data : null;
 }
@@ -1200,8 +1228,15 @@ const UomLayer = L.GridLayer.extend({
          不缓存 URL：一旦被 revoke 而 img 仍引用它，图片会失效变白。 */
       const url = URL.createObjectURL(new Blob([entry.data], { type:'image/png' }));
       const release = () => URL.revokeObjectURL(url);
-      img.onload  = () => { release(); done(null, img); };
-      img.onerror = () => { release(); bumpUomTiles(false); done(null, img); };
+      /* 只有真正拿到数据才计入"块数"：Leaflet 的 tileload 对空白
+         瓦片也触发，用它计数会把空瓦片算进去，掩盖真实情况。 */
+      img.onload  = () => { release(); bumpUomTiles(true); done(null, img); };
+      /* onerror 也要重试：blob 加载/解码失败时那块瓦片会一直空白。
+         之前这里漏了重试（只改了 .catch 分支），属于同类遗漏。 */
+      img.onerror = () => {
+        release(); bumpUomTiles(false); done(null, img);
+        scheduleTileRetry(img, coords);
+      };
       img.src = url;
       const _dt = performance.now() - _tMain;
       PROF.tileMs += _dt; PROF.tileN++;
@@ -1242,7 +1277,12 @@ function scheduleTileRetry(img, coords){
   }, 400 * n);
 }
 
-if (pm){
+/* 前置条件：只要 Worker 或主线程 pm 有一个可用，就应该建图层。
+   原来写的是 if (pm) —— 而 pm 只是回退路径，主路径是 Worker。
+   若 pmtiles.js 加载失败导致 pm 构造失败，整个适飞层根本不会被创建，
+   即使 Worker 完全能用。 */
+if (pm || tileWorker){
+  if (!pm) report('LAYER_NO_MAIN_PM', '主线程 PMTiles 不可用，仅靠 Worker');
   try {
     uomLayer = new UomLayer({
       pane: 'uomPane',             // 必须在底图之上，否则被底图盖住
@@ -1258,7 +1298,7 @@ if (pm){
       ...TILE_OPTS                 // 与底图同一套动画参数，保证同步
     }).addTo(map);
     uomReady = true;
-    uomLayer.on('tileload', () => bumpUomTiles(true));
+    /* 不再用 tileload 计数（它对空白瓦片也触发），成功/失败都在 createTile 里精确统计 */
     uomLayer.on('tileerror', e => {
       bumpUomTiles(false);
       console.warn('UOM 瓦片加载失败', e && e.coords);
@@ -1366,7 +1406,7 @@ const DJI_STYLE = {
   restricted:    { color:'#ef4444', weight:1.2, opacity:.85, fillColor:'#ef4444', fillOpacity:.20 },
   warning:       { color:'#f59e0b', weight:1.2, opacity:.85, fillColor:'#f59e0b', fillOpacity:.16 },
   authorization: { color:'#a855f7', weight:1.2, opacity:.85, fillColor:'#a855f7', fillOpacity:.20 },
-  recommended:   { color:'#3b82f6', weight:1.2, opacity:.85, fillColor:'#3b82f6', fillOpacity:.16 }
+  recommended:   { color:'#7c8b9c', weight:1.2, opacity:.85, fillColor:'#7c8b9c', fillOpacity:.16 }
 };
 const DJI_LABEL = {
   restricted:'禁飞区', warning:'加强警示区', authorization:'授权区', recommended:'推荐区'
@@ -1561,7 +1601,15 @@ function lonLatToTilePixel(lon, lat, z){
 async function queryUom(lat, lon){
   if (!uomReady) return { state:'unknown', why:'数据未就绪' };
   const { x, y, px, py } = lonLatToTilePixel(lon, lat, NATIVE_MAX_Z);
-  const data = await getTilePixels(NATIVE_MAX_Z, x, y);
+  let data = null;
+  try {
+    data = await getTilePixels(NATIVE_MAX_Z, x, y);
+  } catch(e){
+    /* getTileEntry 失败时会抛错（失败不再被当成"无数据"）。
+       这里必须接住，否则异常会打断整个点击查询流程，
+       结果卡片会一直停在"查询中…"。 */
+    return { state:"unknown", why:"取数失败：" + ((e && e.message) || e) };
+  }
   if (!data){
     return { state:'no', why:`z13 瓦片 ${x}/${y} 无数据（该处无适飞空域）`, tile:`${NATIVE_MAX_Z}/${x}/${y}` };
   }
@@ -1584,7 +1632,7 @@ async function queryAt(lat, lon){
 
   if (marker) map.removeLayer(marker);
   marker = L.circleMarker([lat, lon], {
-    radius:7, color:'#fff', weight:2, fillColor:'#3b82f6', fillOpacity:1
+    radius:7, color:'#fff', weight:2, fillColor:'#2c5f5a', fillOpacity:1
   }).addTo(map);
 
   const R = [];
