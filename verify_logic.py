@@ -58,7 +58,7 @@ def point_in_feature(pt, geom):
 
 def main():
     pm = PMTiles("data/uom-shifei.pmtiles")
-    with open("data/dji_flysafe.geojson", encoding="utf-8") as f:
+    with open("data/dji_full.geojson", encoding="utf-8") as f:
         dji = json.load(f)
     with open("data/custom_zones.geojson", encoding="utf-8") as f:
         zones = json.load(f)
