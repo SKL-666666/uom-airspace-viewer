@@ -85,6 +85,14 @@
      所有图层共用这一个变换 —— 所以只要动画期间不插新瓦片请求，
      两层就严格同步。will-change 让它走 GPU 合成。 */
   .leaflet-map-pane{will-change:transform;backface-visibility:hidden}
+  /* 瓦片淡入。
+     Leaflet 自带的 .leaflet-fade-anim 只给 popup 加了过渡，瓦片本身是从
+     visibility:hidden 直接变可见 —— 瓦片变快后（装满一屏 65ms）整屏会
+     "啪"地一下跳变，观感生硬。这里给瓦片补一条透明度过渡。
+     注意 Leaflet 的 CSS 里有 `.leaflet-tile{transition:none}`，
+     本规则在同优先级下位于其后，因此生效。 */
+  .leaflet-tile{transition:opacity .18s linear}
+
   /* 缩短缩放动画时长（Leaflet 默认 0.25s）。
      快速滚轮时每一格都会重启这个过渡，0.25s 会让地图明显"追不上"输入。
      0.13s 在观感上仍平滑，但跟手很多。
@@ -295,7 +303,7 @@
    alpha 严格为 0 或 255，无抗锯齿中间值，因此判定无歧义。
    瓦片缺失 ⇒ 该区域无适飞空域。 */
 /* 构建标识：用来确认浏览器实际加载的是哪一版，排查缓存问题 */
-const BUILD = 'v16-server-tiles';
+const BUILD = 'v16.1-fix';
 
 /* 加载层兜底：放在脚本最前面注册。
    之前把它放在末尾，一旦中间某处抛错就永远不执行，页面会卡死在
@@ -449,10 +457,15 @@ const CONFIG = {
    所有图层共用这一个变换，因此严格同步且不掉帧。
    keepBuffer 只影响视口外预留几圈瓦片，不影响同步，故两者可不同：
    底图走网络，少留；UOM 是本地数据，多留换取流畅。 */
+/* 注意：这里不要放 tileSize。
+   曾经放过 tileSize:256，而图层写成 `{ tileSize:512, ..., ...TILE_OPTS }`
+   —— 后面的展开把 tileSize 覆盖回 256，UOM 图层的 512 被吃掉。
+   结果瓦片网格坐标与 zoomOffset 对不上，请求坐标算到原生层级的 2 倍，
+   大部分超出数据范围返回空，整个适飞层看不见。
+   tileSize 是各图层自己的几何参数，统一写在各自选项里。 */
 const TILE_OPTS = {
   updateWhenIdle: false,      // 拖动过程中即时加载
-  updateWhenZooming: false,   // 动画期间不动瓦片（性能 + 同步的关键）
-  tileSize: 256
+  updateWhenZooming: false   // 动画期间不动瓦片（避免和底图错位）
 };
 
 /* 底图注册表。
@@ -516,7 +529,8 @@ function makeBasemap(key){
     return parts.length ? L.layerGroup(parts) : null;
   }
   if (key.startsWith('tdt_')) return tdtLayer(key === 'tdt_img' ? 'img' : key === 'tdt_ter' ? 'ter' : 'vec');
-  const opts = { ...TILE_OPTS, keepBuffer: 1, maxZoom: 18, attribution: cfg.attr || '' };
+  const opts = { ...TILE_OPTS, tileSize: 256, keepBuffer: 1, maxZoom: 18,
+                 attribution: cfg.attr || '' };
   if (cfg.sub) opts.subdomains = cfg.sub;
   if (cfg.tms) opts.tms = true;
   return L.tileLayer(cfg.url, opts);
@@ -641,6 +655,7 @@ let uomError = '';
 
 try {
   uomLayer = L.tileLayer('uom/{z}/{x}/{y}.png', {
+    ...TILE_OPTS,                 // 公共项先展开，后面显式项才不会被覆盖
     pane: 'uomPane',
     tileSize: 512,
     zoomOffset: -1,
@@ -649,8 +664,7 @@ try {
     maxZoom: 18,            // 13 级以上由 Leaflet 放大父瓦片
     opacity: 0.65,
     keepBuffer: 1,
-    bounds: L.latLngBounds([17.5, 73.0], [54.0, 135.5]),  // 数据覆盖范围
-    ...TILE_OPTS
+    bounds: L.latLngBounds([17.5, 73.0], [54.0, 135.5])  // 数据覆盖范围
   }).addTo(map);
   uomReady = true;
   uomLayer.on('tileload', () => bumpUomTiles(true));
