@@ -285,7 +285,7 @@
    alpha 严格为 0 或 255，无抗锯齿中间值，因此判定无歧义。
    瓦片缺失 ⇒ 该区域无适飞空域。 */
 /* 构建标识：用来确认浏览器实际加载的是哪一版，排查缓存问题 */
-const BUILD = 'v8';
+const BUILD = 'v9';
 
 /* 诊断上报：把浏览器里的真实状态回传到本地服务器，落盘成 diag.log。
    排查时截图里的文字读不出来，直接回传文本最省事。 */
@@ -399,10 +399,9 @@ const map = L.map('map', {
   tap: false,                 // 移动端避免点图时触发缩放
   touchZoom: true,
   zoomAnimation: true,
-  /* 关闭瓦片淡入。淡入是 Map 级选项（不是图层选项，写错会被静默忽略）：
-     每块瓦片一个 opacity 过渡，一屏几百块同时过渡带来大量合成开销，
-     关掉后瓦片直接显示，明显更跟手。 */
-  fadeAnimation: false,
+  /* fadeAnimation 保持 Leaflet 默认（true）。
+     我一度关掉它想省合成开销，但结果是新瓦片"硬切"进来，
+     拖动时视觉上就是一片一片往外蹦，观感更像闪烁。 */
   zoomAnimationThreshold: 4,  // 跨 4 级以上直接跳转，不做动画（跨省定位更快）
   preferCanvas: true,         // 矢量图层统一走 canvas，省掉 SVG DOM 开销
   markerZoomAnimation: false,
@@ -419,29 +418,29 @@ const map = L.map('map', {
 map.createPane('basePane').style.zIndex = 200;
 map.createPane('uomPane').style.zIndex = 300;
 
-/* 底图失败重试兜底。
-   天地图对免费 key 有 QPS 限流，拖动时瞬时失败很常见；而 Leaflet
-   自身不会重试，失败瓦片会一直空着（表现就是"大片空白"）。
-   这里做有限次数的整体重绘兜底，次数封顶避免放大限流。 */
-let baseRetryCount = 0;
+/* 底图失败重试：只重试失败的那一块瓦片，绝不整屏重绘。
+   天地图对免费 key 有 QPS 限流，拖动时瞬时失败常见，而 Leaflet 自身
+   不重试，失败瓦片会一直空着。
+   注意：不能用 layer.redraw() —— 它会清空全部瓦片重新加载，拖动时触发
+   就是整屏闪烁。这里直接对失败的那个 <img> 重新赋值 src，只影响它自己。 */
 function attachBaseRetry(layer, limit){
-  const guard = (e) => {
-    if (baseLayer !== layer) return;         // 已切换底图，忽略
-    if (baseRetryCount >= limit) return;
-    baseRetryCount++;
-    setTimeout(() => {
-      if (baseLayer === layer) layer.redraw();
-    }, 900 * baseRetryCount);
+  const retryOne = (e) => {
+    const img = e && e.tile;
+    if (!img || !img.src) return;
+    const n = (img._uomRetry = (img._uomRetry || 0) + 1);
+    if (n > limit) return;
+    const src = img.src;
+    img.src = '';
+    setTimeout(() => { img.src = src; }, 900 * n);
   };
-  if (typeof layer.eachLayer === 'function') layer.eachLayer(l => l.on('tileerror', guard));
-  else layer.on('tileerror', guard);
+  if (typeof layer.eachLayer === 'function') layer.eachLayer(l => l.on('tileerror', retryOne));
+  else layer.on('tileerror', retryOne);
 }
 
 let baseLayer = null;
 
 function setBase(kind){
   if (baseLayer){ map.removeLayer(baseLayer); baseLayer = null; }
-  baseRetryCount = 0;                       // 换底图后重试额度重置
   document.getElementById('tdtWarn').classList.toggle('on', kind.startsWith('tdt'));
   document.getElementById('amapWarn').classList.toggle('on', kind.startsWith('amap'));
   if (kind === 'none') return;
@@ -483,12 +482,12 @@ const tileStore = new Map();
 const TILE_STORE_MAX = 600;
 const tileInflight = new Map();   // key -> Promise，用于合并同一瓦片的并发请求
 
-function evictTile(key){
-  const e = tileStore.get(key);
-  if (e && e.url) URL.revokeObjectURL(e.url);   // 淘汰时才释放 blob
-  tileStore.delete(key);
-}
-
+/* 注意：这里刻意不缓存 objectURL。
+   曾经为了减少 blob 创建，把 URL 存在 entry 上复用、在 LRU 淘汰时
+   revoke —— 结果拖动时瓦片频繁进出缓存，被 revoke 的 URL 若仍被屏幕上的
+   <img> 引用，图片就会失效变白，表现就是"一闪一闪"。
+   改成每次渲染新建 URL、图片 load 完立即 revoke：既不泄漏，也不会
+   出现"引用已释放 URL"的情况。 */
 async function getTileEntry(z, x, y){
   if (!pm) return null;
   const key = z + '/' + x + '/' + y;
@@ -510,7 +509,7 @@ async function getTileEntry(z, x, y){
     } catch(e){ entry = null; }
     tileStore.set(key, entry);            // 找不到也缓存 null，避免反复查
     while (tileStore.size > TILE_STORE_MAX) {
-      evictTile(tileStore.keys().next().value);
+      tileStore.delete(tileStore.keys().next().value);
     }
     tileInflight.delete(key);
     return entry;
@@ -533,14 +532,13 @@ const UomLayer = L.GridLayer.extend({
        coords.z 钳到 13 并拉伸显示，这里直接用 coords 即可 */
     getTileEntry(coords.z, coords.x, coords.y).then(entry => {
       if (!entry){ done(null, img); return; }   // 该处无适飞数据，留空
-      /* objectURL 存在 entry 上复用；图片一旦 load 完成，浏览器已持有
-         解码数据，URL 被淘汰释放也不会影响已显示的图片。 */
-      if (!entry.url){
-        entry.url = URL.createObjectURL(new Blob([entry.data], { type:'image/png' }));
-      }
-      img.onload  = () => done(null, img);
-      img.onerror = () => { bumpUomTiles(false); done(null, img); };
-      img.src = entry.url;
+      /* 每次渲染新建 URL，load 完立即释放。
+         不缓存 URL：一旦被 revoke 而 img 仍引用它，图片会失效变白。 */
+      const url = URL.createObjectURL(new Blob([entry.data], { type:'image/png' }));
+      const release = () => URL.revokeObjectURL(url);
+      img.onload  = () => { release(); done(null, img); };
+      img.onerror = () => { release(); bumpUomTiles(false); done(null, img); };
+      img.src = url;
     }).catch(err => {
       /* 关键：这里绝不能静默吞掉。之前写成 .catch(()=>done(null,img))
          导致取数失败时既不计数也不报错，页面上完全看不出问题。
@@ -564,11 +562,11 @@ if (pm){
       maxNativeZoom: NATIVE_MAX_Z, // 原生最大 13 级
       maxZoom: 18,                 // 13 级以上由 Leaflet 放大父瓦片
       opacity: 0.65,
-      /* keepBuffer 从 3 降到 1。
-         视口 1911x1053 在 zoom 5 实际可见约 40 块瓦片，keepBuffer:3
-         会把预取范围扩到 265 块（6 倍），每块都要走一次 PMTiles 目录
-         查询。本地虽快，但并发上千次请求仍然拖慢整体交互。 */
-      keepBuffer: 1,
+      /* keepBuffer 取 2（Leaflet 默认值）。
+         取 3 会预取到 265 块（视口实际可见约 40 块，超取 6 倍）；
+         取 1 则拖动时瓦片频繁进出缓存、反复重建，反而更抖。
+         2 是两者的平衡点。 */
+      keepBuffer: 2,
       ...TILE_OPTS                 // 与底图同一套动画参数，保证同步
     }).addTo(map);
     uomReady = true;
