@@ -85,14 +85,6 @@
      所有图层共用这一个变换 —— 所以只要动画期间不插新瓦片请求，
      两层就严格同步。will-change 让它走 GPU 合成。 */
   .leaflet-map-pane{will-change:transform;backface-visibility:hidden}
-  /* 缩短缩放动画时长（Leaflet 默认 0.25s）。
-     快速滚轮时每一格都会重启这个过渡，0.25s 会让地图明显"追不上"输入。
-     0.13s 在观感上仍平滑，但跟手很多。
-     注意：上一版 v13 我把这一项和 updateWhenZooming 打包在一起改，
-     结果无法归因（更卡了到底是哪个造成的）。这次只改这一项。 */
-  .leaflet-zoom-anim .leaflet-zoom-animated{
-    transition:transform .13s cubic-bezier(0,0,.25,1);
-  }
   /* 注意：不要给单个瓦片加 will-change —— 一屏几百个瓦片各自提升为
      独立合成层会导致 GPU 内存暴涨、严重掉帧。这里不设。 */
 
@@ -279,13 +271,13 @@
 </div>
 
 <script src="lib/leaflet.js"></script>
+<script src="lib/pmtiles.js"></script>
 <script>
 /* =====================================================================
    UOM 适飞空域查询 —— 前端主逻辑
 
    数据来源：
      UOM 适飞空域   data/uom-shifei.pmtiles   第三方归档 thezzisu/uomtiles
-                    （服务端合成 512px 瓦片后经 /uom/ 提供）
                     数据实际抓取于 2026-05-23（取自 PMTiles 元数据 version 字段）
     大疆禁飞/限飞   data/dji_cn_*.geojson     整理自 fly-safe.dji.com，仅中国境内
     ZB(SR)801       data/custom_zones.geojson 用户依据 NOTAM C0903/26 转述自行标注
@@ -295,7 +287,7 @@
    alpha 严格为 0 或 255，无抗锯齿中间值，因此判定无歧义。
    瓦片缺失 ⇒ 该区域无适飞空域。 */
 /* 构建标识：用来确认浏览器实际加载的是哪一版，排查缓存问题 */
-const BUILD = 'v16-server-tiles';
+const BUILD = 'v15-maps-prefetch';
 
 /* 加载层兜底：放在脚本最前面注册。
    之前把它放在末尾，一旦中间某处抛错就永远不执行，页面会卡死在
@@ -355,6 +347,13 @@ function bumpUomTiles(ok){
   // 合并刷新，别让每次瓦片都触发一次 DOM 写入
   if (uomStatTimer) return;
   uomStatTimer = setTimeout(() => { uomStatTimer = null; updateLayerBadge(); }, 250);
+}
+
+/* 由 worker 上报的 header 范围设置图层 bounds */
+function applyUomBounds(){
+  if (!uomBounds || !uomLayer) return;
+  uomLayer.options.bounds = L.latLngBounds(uomBounds[0], uomBounds[1]);
+  uomLayer.redraw();
 }
 
 const SUITABLE_RGBA = [41, 128, 185, 255];
@@ -462,7 +461,6 @@ const TILE_OPTS = {
 const BASEMAPS = [
   { key:'tdt_vec',  label:'天地图 · 矢量',    crs:'WGS84',  note:'与数据无偏移', needKey:true },
   { key:'tdt_img',  label:'天地图 · 影像',    crs:'WGS84',  note:'与数据无偏移', needKey:true },
-  { key:'tdt_ter',  label:'天地图 · 地形',    crs:'WGS84',  note:'与数据无偏移', needKey:true },
   { key:'esri_img', label:'Esri · 卫星影像',  crs:'WGS84',  note:'与数据无偏移',
     url:'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
     attr:'&copy; Esri' },
@@ -481,14 +479,6 @@ const BASEMAPS = [
   { key:'tx_vec',   label:'腾讯 · 矢量',      crs:'GCJ-02', note:'偏移 300~600m',
     url:'https://rt{s}.map.gtimg.com/realtime?z={z}&x={x}&y={y}&type=vector&style=0',
     sub:'0123', tms:true, attr:'&copy; 腾讯地图' },
-  { key:'amap_sat_lbl', label:'高德 · 卫星+注记', crs:'GCJ-02', note:'偏移 300~600m',
-    group:['amap_sat','amap_lbl'], attr:'&copy; 高德地图' },
-  { key:'amap_lbl', label:'高德 · 影像注记',  crs:'GCJ-02', note:'偏移 300~600m',
-    url:'https://webst0{s}.is.autonavi.com/appmaptile?style=8&x={x}&y={y}&z={z}',
-    sub:'1234', attr:'&copy; 高德地图' },
-  { key:'osmd',     label:'OSM · 德国镜像',   crs:'WGS84',  note:'与数据无偏移',
-    url:'https://tile.openstreetmap.de/{z}/{x}/{y}.png',
-    attr:'&copy; OpenStreetMap contributors' },
   { key:'none',     label:'无底图',           crs:'-',      note:'' }
 ];
 const BASEMAP_MAP = {};
@@ -502,20 +492,16 @@ function tdtLayer(type){
     `&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}&tk=${k}`,
     { ...TILE_OPTS, keepBuffer: 1, subdomains: '01234567', maxZoom: 18,
       attribution: '&copy; 天地图' });
-  if (type === 'img') return L.layerGroup([mk('img'), mk('cia')]);
-  if (type === 'ter') return L.layerGroup([mk('ter'), mk('cta')]);
-  return L.layerGroup([mk('vec'), mk('cva')]);
+  return type === 'img'
+    ? L.layerGroup([mk('img'), mk('cia')])
+    : L.layerGroup([mk('vec'), mk('cva')]);
 }
 
 /* 按注册表创建底图图层。天地图特殊（WMTS + 底图/注记两层）。 */
 function makeBasemap(key){
   const cfg = BASEMAP_MAP[key];
   if (!cfg || key === 'none') return null;
-  if (cfg.group){
-    const parts = cfg.group.map(makeBasemap).filter(Boolean);
-    return parts.length ? L.layerGroup(parts) : null;
-  }
-  if (key.startsWith('tdt_')) return tdtLayer(key === 'tdt_img' ? 'img' : key === 'tdt_ter' ? 'ter' : 'vec');
+  if (key.startsWith('tdt_')) return tdtLayer(key === 'tdt_img' ? 'img' : 'vec');
   const opts = { ...TILE_OPTS, keepBuffer: 1, maxZoom: 18, attribution: cfg.attr || '' };
   if (cfg.sub) opts.subdomains = cfg.sub;
   if (cfg.tms) opts.tms = true;
@@ -616,53 +602,289 @@ function setBase(kind){
   }
 }
 
-/* ---------------- UOM 适飞层 ----------------
-   瓦片由服务端 /uom/{z}/{x}/{y}.png 提供：服务端把 4 张原始 256px 瓦片
-   合成一张 512px PNG 返回。
-
-   为什么不用客户端直接读 PMTiles：
-   1) 原始数据是 256px 瓦片，客户端每张发 1 个 Range 请求。一屏 1911x1053
-      需要 40 多张，而浏览器对同一域名只开 6 条连接 —— 请求数就是"瓦片
-      刷新慢"的直接原因。合成 512px 后同样面积只需 12 张，降到 1/3.3。
-   2) Windows 上 Chrome 的 fetch 对 PMTiles 的 Range 请求带 cache:"no-store"
-      （库内逻辑），导致 HTTP 缓存完全失效，每次都要重新拉字节。
-      改成普通瓦片后可以正常缓存（max-age=7天），二次访问是瞬时的。
-   3) 客户端不再需要解析 PMTiles，省掉 varint 解码、目录查找、gzip 解压。
-
-   坐标约定（容易差一级，已推演确认）：
-     tileSize:512 + zoomOffset:-1
-     屏幕 zoom -> _tileZoom（被 maxNativeZoom 钳制）-> URL zoom = _tileZoom-1
-     服务端把 URL 的 (Z,X,Y) 解析为原生 (Z+1, 2X..2X+1, 2Y..2Y+1)
-   所以 maxNativeZoom 必须填 13：屏幕 zoom>=13 时 _tileZoom=13 -> URL z12
-   -> 原生 z13（数据的最高层级）。填 12 会导致永远取不到 13 级。 */
-let uomLayer = null;
+/* ---------------- UOM 适飞层（PMTiles） ---------------- */
+let pm = null, uomLayer = null;
 let uomReady = false;
 let uomError = '';
+let uomBounds = null;          // 由 worker 上报的 header 范围
+
+/* 取数走 Web Worker。
+   PMTiles 每次取瓦片都要做 varint 解码、目录二分查找、gzip 解压
+   （叶子目录解出来 528KB / 4096 项），全在 JS 层。一屏几百块瓦片同时
+   加载时这些计算全部堆在主线程，实测造成 80~136ms 的连续长任务。
+   放进 Worker 后主线程只剩「拿 ArrayBuffer → 建 blob → 塞给 img」。 */
+let tileWorker = null;
+let workerSeq = 0;
+const workerPending = new Map();
+let workerReady = false;
+let workerFailed = false;
 
 try {
-  uomLayer = L.tileLayer('uom/{z}/{x}/{y}.png', {
-    pane: 'uomPane',
-    tileSize: 512,
-    zoomOffset: -1,
-    minZoom: 0,
-    maxNativeZoom: 13,      // 钳制点在 tileZoom，URL 层 = tileZoom-1 = 12，对应原生 13
-    maxZoom: 18,            // 13 级以上由 Leaflet 放大父瓦片
-    opacity: 0.65,
-    keepBuffer: 1,
-    bounds: L.latLngBounds([17.5, 73.0], [54.0, 135.5]),  // 数据覆盖范围
-    ...TILE_OPTS
-  }).addTo(map);
-  uomReady = true;
-  uomLayer.on('tileload', () => bumpUomTiles(true));
-  uomLayer.on('tileerror', e => {
-    bumpUomTiles(false);
-    console.warn('UOM 瓦片加载失败', e && e.coords);
+  tileWorker = new Worker('tile-worker.js');
+  tileWorker.onmessage = (ev) => {
+    const m = ev.data;
+    if (m && m.ready !== undefined){
+      workerReady = !!m.ready;
+      if (m.ready && m.header){
+        uomBounds = [[m.header.minLat, m.header.minLon],
+                     [m.header.maxLat, m.header.maxLon]];
+        applyUomBounds();
+      } else if (!m.ready) {
+        workerFailed = true;
+        console.warn('Worker 内 PMTiles 初始化失败:', m.error);
+        report('WORKER_HEADER_FAIL', String(m.error));
+      }
+      return;
+    }
+    const p = workerPending.get(m.id);
+    if (!p) return;
+    workerPending.delete(m.id);
+    if (m.error) p.reject(new Error(m.error));
+    else p.resolve(m.data);
+  };
+  tileWorker.onerror = (e) => {
+    workerFailed = true;
+    console.error('tile-worker 出错', e);
+    report('WORKER_ERROR', (e && e.message) || 'unknown');
+  };
+} catch(e){
+  tileWorker = null;
+  workerFailed = true;
+  console.warn('无法创建 Worker，回退到主线程取数', e);
+}
+
+function workerGetTile(z, x, y){
+  return new Promise((resolve, reject) => {
+    const id = ++workerSeq;
+    workerPending.set(id, { resolve, reject });
+    tileWorker.postMessage({ id, z, x, y });
   });
+}
+
+/* 主线程直连（Worker 不可用时的回退路径） */
+try {
+  pm = new pmtiles.PMTiles('data/uom-shifei.pmtiles',
+                           new pmtiles.SharedPromiseCache(1000));
 } catch(e){
   uomError = e.message || String(e);
-  console.error('UOM 图层创建失败', e);
-  showError('UOM 图层创建失败', uomError);
+  console.error('PMTiles 初始化失败', e);
 }
+
+/* 取一块瓦片的原始字节：优先 Worker，失败回退主线程 */
+async function fetchTileBytes(z, x, y){
+  if (tileWorker && !workerFailed){
+    try {
+      return await workerGetTile(z, x, y);
+    } catch(e){
+      report('WORKER_FETCH_FAIL', String((e && e.message) || e));
+      workerFailed = true;             // 之后走回退，不再反复报错
+    }
+  }
+  if (!pm) return null;
+  const res = await pm.getZxy(z, x, y);
+  return (res && res.data && res.data.byteLength) ? res.data : null;
+}
+
+/* 瓦片缓存：显示层与「点击判定」共用同一份数据，同一瓦片不会取两次。
+   用 Map 的插入顺序当 LRU。
+   entry 结构：{ data: ArrayBuffer, pixels?: Uint8ClampedArray } */
+const tileStore = new Map();
+const TILE_STORE_MAX = 600;
+const tileInflight = new Map();   // key -> Promise，用于合并同一瓦片的并发请求
+
+/* 注意：这里刻意不缓存 objectURL。
+   曾经为了减少 blob 创建，把 URL 存在 entry 上复用、在 LRU 淘汰时
+   revoke —— 结果拖动时瓦片频繁进出缓存，被 revoke 的 URL 若仍被屏幕上的
+   <img> 引用，图片就会失效变白，表现就是"一闪一闪"。
+   改成每次渲染新建 URL、图片 load 完立即 revoke：既不泄漏，也不会
+   出现"引用已释放 URL"的情况。 */
+async function getTileEntry(z, x, y){
+  if (!pm) return null;
+  const key = z + '/' + x + '/' + y;
+
+  if (tileStore.has(key)){
+    const v = tileStore.get(key);
+    tileStore.delete(key); tileStore.set(key, v);   // 触碰，挪到队尾
+    return v;
+  }
+  /* 快速拖动/缩放时同一瓦片会被连续请求多次，这里合并成一个 Promise，
+     否则会对同一瓦片发起重复的 PMTiles 目录查询。 */
+  if (tileInflight.has(key)) return tileInflight.get(key);
+
+  const p = (async () => {
+    let entry = null;
+    try {
+      const data = await fetchTileBytes(z, x, y);
+      if (data && data.byteLength) entry = { data };
+    } catch(e){ entry = null; }
+    tileStore.set(key, entry);            // 找不到也缓存 null，避免反复查
+    while (tileStore.size > TILE_STORE_MAX) {
+      tileStore.delete(tileStore.keys().next().value);
+    }
+    tileInflight.delete(key);
+    return entry;
+  })();
+
+  tileInflight.set(key, p);
+  return p;
+}
+
+/* 自建瓦片层，替代库自带的 leafletRasterLayer，原因有三：
+   1) 复用 tileStore —— 显示与判定不重复取数
+   2) objectURL 按瓦片缓存复用 —— 库自带版本每渲染一次就新建一个 blob，
+      来回拖动时会疯狂创建/丢弃，这里只在 LRU 淘汰时释放
+   3) 合并并发请求 */
+const UomLayer = L.GridLayer.extend({
+  createTile(coords, done){
+    const img = document.createElement('img');
+    img.alt = '';
+    /* 设了 maxNativeZoom=13 后，Leaflet 在放大超过 13 级时会把
+       coords.z 钳到 13 并拉伸显示，这里直接用 coords 即可 */
+    const _tWait = performance.now();
+    getTileEntry(coords.z, coords.x, coords.y).then(entry => {
+      /* 归因：区分"取数等待"与"主线程处理"。取数等待是异步的、不占主线程；
+         真正影响流畅度的是下面这段同步工作（建 blob、建 URL、设置 src）。 */
+      PROF.tileWaitMs += performance.now() - _tWait; PROF.tileWaitN++;
+      const _tMain = performance.now();
+      if (!entry){ PROF.tileMs += performance.now() - _tMain; PROF.tileN++; done(null, img); return; }
+      /* 每次渲染新建 URL，load 完立即释放。
+         不缓存 URL：一旦被 revoke 而 img 仍引用它，图片会失效变白。 */
+      const url = URL.createObjectURL(new Blob([entry.data], { type:'image/png' }));
+      const release = () => URL.revokeObjectURL(url);
+      img.onload  = () => { release(); done(null, img); };
+      img.onerror = () => { release(); bumpUomTiles(false); done(null, img); };
+      img.src = url;
+      const _dt = performance.now() - _tMain;
+      PROF.tileMs += _dt; PROF.tileN++;
+      if (_dt > PROF.tileMax) PROF.tileMax = _dt;
+    }).catch(err => {
+      /* 关键：这里绝不能静默吞掉。之前写成 .catch(()=>done(null,img))
+         导致取数失败时既不计数也不报错，页面上完全看不出问题。
+         现在计数 + 上报具体原因（只在头几次上报，避免刷屏）。 */
+      bumpUomTiles(false);
+      if (uomTileErrs <= 3) {
+        report('TILE_FETCH_FAIL',
+          `z${coords.z}/${coords.x}/${coords.y} :: ${(err && err.message) || err}`);
+      }
+      done(null, img);
+    });
+    return img;
+  }
+});
+
+if (pm){
+  try {
+    uomLayer = new UomLayer({
+      pane: 'uomPane',             // 必须在底图之上，否则被底图盖住
+      minZoom: 0,
+      maxNativeZoom: NATIVE_MAX_Z, // 原生最大 13 级
+      maxZoom: 18,                 // 13 级以上由 Leaflet 放大父瓦片
+      opacity: 0.65,
+      /* keepBuffer 降到 1。
+         视口 1911x1053 在 z11 实际可见约 45 块，keepBuffer:2 会请求 117 块
+         （2.6 倍）。实测吞吐只有约 32 块/秒，多请求的每一块都要排队，
+         直接拖长"填满一屏"的时间。相邻层级的预取改由下方的空闲预取负责。 */
+      keepBuffer: 1,
+      ...TILE_OPTS                 // 与底图同一套动画参数，保证同步
+    }).addTo(map);
+    uomReady = true;
+    uomLayer.on('tileload', () => bumpUomTiles(true));
+    uomLayer.on('tileerror', e => {
+      bumpUomTiles(false);
+      console.warn('UOM 瓦片加载失败', e && e.coords);
+    });
+    /* 数据只覆盖中国及周边（约 73~135.5E, 17.5~54N）。
+       设上 bounds 后，视野移出该范围时 Leaflet 不再请求瓦片，
+       省掉大量注定查不到的目录遍历。范围由 worker 读取 header 后上报。 */
+    applyUomBounds();
+  } catch(e){
+    uomError = e.message || String(e);
+    console.error('UOM 图层创建失败', e);
+    showError('UOM 图层创建失败', uomError);
+  }
+}
+/* =====================================================================
+   相邻层级空闲预取
+
+   依据 PROF 实测：单块瓦片平均要等 80ms，交互时 10 秒内要处理 300+ 块，
+   吞吐约 32 块/秒 —— 而一屏需要 100 多块。所以缩放后要等好几秒才填满，
+   主观感受就是"缩放卡"。
+
+   这里在用户停手 600ms 后，把上下相邻层级的瓦片先取进缓存。等真正缩放
+   时这些瓦片已在本地，直接命中，缩放就"瞬时"完成。
+   只在空闲时做、视野一变立刻放弃，不干扰正在进行的操作。
+
+   注意：本块必须在 map 和 getTileEntry 都已声明之后。之前用
+   "updateLayerBadge();" 做锚点，误匹配到 bumpUomTiles 内部那处，
+   整段被塞进 setTimeout 回调里，导致每次定时器触发都重新注册一遍事件。
+   所以这里用行首无缩进的精确锚点。
+   ===================================================================== */
+let prefetchToken = 0;
+let prefetchTimer = null;
+
+/* 某一层级下覆盖当前视野的瓦片坐标 */
+function tilesCoveringView(z){
+  const b = map.getBounds();
+  const n = 1 << z;
+  const lon2x = (lon) => Math.floor((lon + 180) / 360 * n);
+  const lat2y = (lat) => {
+    const r = lat * Math.PI / 180;
+    return Math.floor((1 - Math.asinh(Math.tan(r)) / Math.PI) / 2 * n);
+  };
+  const x0 = Math.max(0, lon2x(b.getWest()));
+  const x1 = Math.min(n - 1, lon2x(b.getEast()));
+  const y0 = Math.max(0, lat2y(b.getNorth()));
+  const y1 = Math.min(n - 1, lat2y(b.getSouth()));
+  const out = [];
+  for (let x = x0; x <= x1; x++)
+    for (let y = y0; y <= y1; y++) out.push([x, y]);
+  return out;
+}
+
+async function prefetchNeighborZooms(){
+  if (!pm && !tileWorker) return;
+  const token = ++prefetchToken;
+  const z = map.getZoom();
+
+  /* 收集上下相邻层级的瓦片；超过原生 13 级时实际用的是 13 级瓦片，需去重 */
+  const list = [];
+  const seen = new Set();
+  for (const zz of [z + 1, z - 1]){
+    if (zz < 0 || zz > 18) continue;
+    const shift = Math.max(0, zz - NATIVE_MAX_Z);
+    const nz = Math.min(zz, NATIVE_MAX_Z);
+    for (const [x, y] of tilesCoveringView(zz)){
+      const key = nz + '/' + (x >> shift) + '/' + (y >> shift);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      if (tileStore.has(key)) continue;
+      list.push(key);
+    }
+  }
+  if (!list.length) return;
+
+  /* 分批并发，每批之间让出主线程；视野一变（token 变化）立即放弃 */
+  const BATCH = 6;
+  let done = 0;
+  for (let i = 0; i < list.length; i += BATCH){
+    if (token !== prefetchToken) return;
+    await Promise.all(list.slice(i, i + BATCH).map(k => {
+      const parts = k.split('/');
+      return getTileEntry(+parts[0], +parts[1], +parts[2]).catch(() => {});
+    }));
+    done += Math.min(BATCH, list.length - i);
+    await new Promise(r => setTimeout(r, 0));
+  }
+  if (token === prefetchToken){
+    report('PREFETCH', { zoom: z, tiles: done });
+  }
+}
+
+map.on('moveend zoomend', () => {
+  prefetchToken++;                       // 取消进行中的预取
+  clearTimeout(prefetchTimer);
+  prefetchTimer = setTimeout(prefetchNeighborZooms, 600);
+});
 
 updateLayerBadge();
 
@@ -829,31 +1051,55 @@ function pointInFeature(pt, geom){
   return false;
 }
 
-/* ---------------- 读取 UOM 瓦片像素 ----------------
-   改由服务端 /uom/probe?lon=&lat= 查询。
-   客户端不再持有 PMTiles，也就不需要解码 PNG 取像素了。
-   服务端用同一个已校验过的 pmtiles_tool 读取，结果与客户端解码等价。 */
+/* ---------------- 读取 UOM 瓦片像素 ---------------- */
+/* 与显示层共用 tileStore：同一瓦片只取一次，解码结果缓存在 entry.pixels */
+const canvas = document.createElement('canvas');
+canvas.width = canvas.height = 256;
+const cctx = canvas.getContext('2d', { willReadFrequently:true });
 
-/* 查询某点 UOM 适飞状态（服务端） */
+async function getTilePixels(z, x, y){
+  const entry = await getTileEntry(z, x, y);
+  if (!entry) return null;
+  if (entry.pixels) return entry.pixels;
+  try {
+    const blob = new Blob([entry.data], { type:'image/png' });
+    const bmp = await createImageBitmap(blob);
+    cctx.clearRect(0, 0, 256, 256);
+    cctx.drawImage(bmp, 0, 0);
+    entry.pixels = cctx.getImageData(0, 0, 256, 256).data;
+    bmp.close();
+  } catch(e){ entry.pixels = null; }
+  return entry.pixels;
+}
+
+/* 经纬度 → z13 瓦片坐标 + 瓦片内像素 */
+function lonLatToTilePixel(lon, lat, z){
+  const n = Math.pow(2, z);
+  const xf = (lon + 180) / 360 * n;
+  const latR = lat * Math.PI / 180;
+  const yf = (1 - Math.asinh(Math.tan(latR)) / Math.PI) / 2 * n;
+  const x = Math.floor(xf), y = Math.floor(yf);
+  const px = Math.min(255, Math.max(0, Math.floor((xf - x) * 256)));
+  const py = Math.min(255, Math.max(0, Math.floor((yf - y) * 256)));
+  return { x, y, px, py };
+}
+
+/* 查询某点 UOM 适飞状态 */
 async function queryUom(lat, lon){
   if (!uomReady) return { state:'unknown', why:'数据未就绪' };
-  try {
-    const r = await fetch(`uom/probe?lon=${lon.toFixed(6)}&lat=${lat.toFixed(6)}`,
-                          { cache:'no-store' });
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    const j = await r.json();
-    if (!j.hasData){
-      return { state:'no', tile: j.tile,
-               why: `z13 瓦片 ${j.tile} 无数据（该处无适飞空域）` };
-    }
-    return {
-      state: j.suitable ? 'yes' : 'no',
-      rgba: j.rgba,
-      tile: j.tile
-    };
-  } catch(e){
-    return { state:'unknown', why:'查询失败：' + ((e && e.message) || e) };
+  const { x, y, px, py } = lonLatToTilePixel(lon, lat, NATIVE_MAX_Z);
+  const data = await getTilePixels(NATIVE_MAX_Z, x, y);
+  if (!data){
+    return { state:'no', why:`z13 瓦片 ${x}/${y} 无数据（该处无适飞空域）`, tile:`${NATIVE_MAX_Z}/${x}/${y}` };
   }
+  const o = (py * 256 + px) * 4;
+  const r = data[o], g = data[o+1], b = data[o+2], a = data[o+3];
+  return {
+    state: a === 255 ? 'yes' : 'no',
+    rgba: [r, g, b, a],
+    tile: `${NATIVE_MAX_Z}/${x}/${y}`,
+    pixel: `${px},${py}`
+  };
 }
 
 /* ---------------- 点击查询 ---------------- */
@@ -1010,7 +1256,9 @@ if (uomError) showError('PMTiles 初始化失败', uomError + '\n（数据文件
 setTimeout(async () => {
   const info = {
     build: BUILD,
-    uomLayerReady: !!uomLayer,
+    pmtilesLib: typeof pmtiles !== 'undefined',
+    pmObj: !!pm,
+    uomReady: uomReady,
     uomError: uomError || null,
     tilesLoaded: uomTiles,
     tilesFailed: uomTileErrs,
@@ -1021,23 +1269,18 @@ setTimeout(async () => {
     mapSize: [map.getSize().x, map.getSize().y],
     dpr: window.devicePixelRatio
   };
-  /* 实测：合成瓦片端点 + 点位查询端点 */
-  try {
-    let t = performance.now();
-    const r = await fetch('uom/4/12/6.png', { cache:'no-store' });
-    const blob = await r.blob();
-    info.tileMs = Math.round(performance.now() - t);
-    info.tileStatus = r.status;
-    info.tileBytes = blob.size;
-    info.tileType = blob.type;
-  } catch(e) { info.tileTestError = (e && e.message) || String(e); }
-  try {
-    let t = performance.now();
-    const r = await fetch('uom/probe?lon=85.0&lat=41.0', { cache:'no-store' });
-    const j = await r.json();
-    info.probeMs = Math.round(performance.now() - t);
-    info.probeSuitable = j.suitable;      // 新疆该点应为 true
-  } catch(e) { info.probeTestError = (e && e.message) || String(e); }
+  if (pm || tileWorker) {
+    try {
+      let t = performance.now();
+      const data = await fetchTileBytes(5, 25, 12);   // 已知有数据的瓦片
+      info.getZxyMs = Math.round(performance.now() - t);
+      info.getZxyOK = !!(data && data.byteLength);
+      info.getZxyBytes = data ? data.byteLength : 0;
+      info.viaWorker = !!(tileWorker && !workerFailed);
+    } catch(e) {
+      info.pmTestError = (e && e.message) || String(e);
+    }
+  }
 
   /* DOM 实测：直接读出渲染层真实状态。
      瓦片"加载成功"但"看不见"，只有查 DOM 才能定位。 */
