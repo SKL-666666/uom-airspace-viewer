@@ -355,7 +355,7 @@
    alpha 严格为 0 或 255，无抗锯齿中间值，因此判定无歧义。
    瓦片缺失 ⇒ 该区域无适飞空域。 */
 /* 构建标识：用来确认浏览器实际加载的是哪一版，排查缓存问题 */
-const BUILD = 'v16.2';
+const BUILD = 'v16.3';
 
 /* 加载层兜底：放在脚本最前面注册。
    之前把它放在末尾，一旦中间某处抛错就永远不执行，页面会卡死在
@@ -403,7 +403,7 @@ window.addEventListener('unhandledrejection', e => {
 });
 
 /* UOM 适飞层加载计数：直接显示在顶栏，能立刻看出瓦片到底有没有在加载 */
-let uomTiles = 0, uomTileErrs = 0, uomStatTimer = null;
+let uomTiles = 0, uomTileErrs = 0, uomNoData = 0, uomStatTimer = null;
 /* 攒批状态。声明放在这里（而不是紧邻 batchFlush）是为了让
    updateLayerBadge 能安全引用 —— 它定义更早，虽然实际调用时机在之后，
    但 typeof 对处于 TDZ 的变量同样会抛错，位置前移最省心。 */
@@ -782,7 +782,7 @@ map.createPane('uomPane').style.zIndex = 300;
 function attachBaseRetry(layer, limit){
   /* 失败计数：同一个底图短时间大量失败时，把原因直接说到界面上，
      省得靠猜（天地图无有效 key 时 WAF 会返回 418，表现就是"底图不出来"）。 */
-  let errCount = 0, reported = false;
+  let errCount = 0, reported = false, lastFailAt = 0;
   const resetErr = () => {
     if (reported) hideBaseWarn();     // 恢复正常后把提示收掉
     errCount = 0; reported = false;
@@ -809,7 +809,11 @@ function attachBaseRetry(layer, limit){
           '③ 网络拦截。<br>' +
           '按 F12 → Network 看那条瓦片请求的状态码可以区分。';
       }
-      showBaseWarn(msg + '<br><span style="color:#8a6417">正在代查真实状态码…</span>');
+      showBaseWarn(msg + '<br><span style="color:#8a6417">正在代查真实状态码…</span>' +
+        '<div style="margin-top:7px"><button id="baseRetryBtn" ' +
+        'style="width:auto;padding:4px 10px;font-size:11px">重新加载底图</button></div>');
+      const rb = document.getElementById('baseRetryBtn');
+      if (rb) rb.onclick = () => { hideBaseWarn(); setBase(document.getElementById('baseSel').value); };
       report('BASE_TILE_ERR', { kind: document.getElementById('baseSel').value,
                                 keyId: keyId || null, hasKey: hasKey,
                                 origin: origin, count: errCount });
@@ -822,10 +826,16 @@ function attachBaseRetry(layer, limit){
         showBaseWarn(msg + extra);
       });
     }
-    /* 已经判定是"大面积失败"时就不要再重试了：
-       key 失效这类问题重试不会成功，反而把请求量翻几倍，
-       对本来就有配额的图源（天地图）是雪上加霜。 */
-    if (reported) return;
+    /* 判定"大面积失败"后进入冷却：不再逐块重试（重试不会成功，
+       只会把请求量翻几倍，对天地图这种有配额的图源是雪上加霜），
+       但**不是永久停止** —— 冷却 30 秒后允许再来一轮，
+       这样用户修好 key 或网络恢复后地图能自己恢复。 */
+    const now = Date.now();
+    if (reported){
+      if (now - lastFailAt < 30000) return;
+      reported = false; errCount = 0;      // 冷却结束，允许重试
+    }
+    lastFailAt = now;
     const img = e && e.tile;
     if (!img || !img.src) return;
     const n = (img._uomRetry = (img._uomRetry || 0) + 1);
@@ -1049,6 +1059,20 @@ function batchFlush(){
   const id = ++workerSeq;
   inflightBatches.set(id, resolvers);
   tileWorker.postMessage({ batch: true, id, tiles: items });
+  /* 超时保护：Worker 若因任何原因（脚本异常、被浏览器回收、消息丢失）
+     没有回包，这些 Promise 会**永远挂着** —— 对应的瓦片一直空白，
+     而且没有任何报错、也不会触发重试。这是最难查的一类故障。
+     超时后主动拒绝，交给上层重试逻辑。 */
+  setTimeout(() => {
+    const rs = inflightBatches.get(id);
+    if (!rs) return;                      // 已正常回包
+    inflightBatches.delete(id);
+    console.warn('批量取数超时 id=' + id + '（' + rs.length + ' 张瓦片）');
+    report('BATCH_TIMEOUT', { id: id, tiles: rs.length });
+    for (const list of rs){
+      for (const r of list) r.reject(new Error('batch timeout'));
+    }
+  }, 15000);
   scheduleBadgeRefresh();
 }
 
@@ -1161,7 +1185,14 @@ const UomLayer = L.GridLayer.extend({
          真正影响流畅度的是下面这段同步工作（建 blob、建 URL、设置 src）。 */
       PROF.tileWaitMs += performance.now() - _tWait; PROF.tileWaitN++;
       const _tMain = performance.now();
-      if (!entry){ PROF.tileMs += performance.now() - _tMain; PROF.tileN++; done(null, img); return; }
+      if (!entry){
+        /* 该处确实没有适飞空域数据（不是失败）。单独计数，
+           否则用户看到大片空白无法判断是"本来就没有"还是"加载出问题了"。 */
+        uomNoData++;
+        PROF.tileMs += performance.now() - _tMain; PROF.tileN++;
+        done(null, img);
+        return;
+      }
       /* 每次渲染新建 URL，load 完立即释放。
          不缓存 URL：一旦被 revoke 而 img 仍引用它，图片会失效变白。 */
       const url = URL.createObjectURL(new Blob([entry.data], { type:'image/png' }));
@@ -1651,6 +1682,11 @@ function collectDiag(){
     uomReady: uomReady,
     uomTiles: uomTiles,
     uomTileErrs: uomTileErrs,
+    uomNoData: uomNoData,          // 该处确实没有适飞数据（不是失败）
+    tileStoreSize: tileStore.size,
+    tileStoreBlank: (() => { let n = 0; for (const v of tileStore.values()) if (!v) n++; return n; })(),
+    batchInflight: inflightBatches.size,
+    batchQueued: batchPending.size,
     zoom: map.getZoom(),
     center: [+map.getCenter().lat.toFixed(4), +map.getCenter().lng.toFixed(4)],
     mapSize: [map.getSize().x, map.getSize().y]
