@@ -160,13 +160,7 @@
 <div class="panel" id="side">
   <div class="sec">
     <h3>底图</h3>
-    <select id="baseSel">
-      <option value="tdt_vec">天地图 · 矢量</option>
-      <option value="tdt_img">天地图 · 影像</option>
-      <option value="amap_vec">高德 · 矢量（有偏移）</option>
-      <option value="amap_sat">高德 · 卫星（有偏移）</option>
-      <option value="none">无底图</option>
-    </select>
+    <select id="baseSel"></select>
     <div class="warnbox" id="tdtWarn">
       天地图需要 API Key。请到 console.tianditu.gov.cn 免费申请后填入：
       <div style="display:flex;gap:6px;margin-top:6px">
@@ -293,7 +287,7 @@
    alpha 严格为 0 或 255，无抗锯齿中间值，因此判定无歧义。
    瓦片缺失 ⇒ 该区域无适飞空域。 */
 /* 构建标识：用来确认浏览器实际加载的是哪一版，排查缓存问题 */
-const BUILD = 'v14.1-cn';
+const BUILD = 'v15-maps-prefetch';
 
 /* 加载层兜底：放在脚本最前面注册。
    之前把它放在末尾，一旦中间某处抛错就永远不执行，页面会卡死在
@@ -460,26 +454,58 @@ const TILE_OPTS = {
   tileSize: 256
 };
 
+/* 底图注册表。
+   crs 标注很关键：WGS84（含 CGCS2000）与 UOM / 大疆数据同系，叠加无偏移；
+   GCJ-02 有 300~600 米偏移，只作参考底图，不能用来核对边界。
+   下列图源都实测过能取到真实图片（不是只看状态码）。 */
+const BASEMAPS = [
+  { key:'tdt_vec',  label:'天地图 · 矢量',    crs:'WGS84',  note:'与数据无偏移', needKey:true },
+  { key:'tdt_img',  label:'天地图 · 影像',    crs:'WGS84',  note:'与数据无偏移', needKey:true },
+  { key:'esri_img', label:'Esri · 卫星影像',  crs:'WGS84',  note:'与数据无偏移',
+    url:'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+    attr:'&copy; Esri' },
+  { key:'esri_str', label:'Esri · 街道',      crs:'WGS84',  note:'与数据无偏移',
+    url:'https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}',
+    attr:'&copy; Esri' },
+  { key:'esri_top', label:'Esri · 地形',      crs:'WGS84',  note:'与数据无偏移',
+    url:'https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}',
+    attr:'&copy; Esri' },
+  { key:'amap_vec', label:'高德 · 矢量',      crs:'GCJ-02', note:'偏移 300~600m',
+    url:'https://webrd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}',
+    sub:'1234', attr:'&copy; 高德地图' },
+  { key:'amap_sat', label:'高德 · 卫星',      crs:'GCJ-02', note:'偏移 300~600m',
+    url:'https://webst0{s}.is.autonavi.com/appmaptile?style=6&x={x}&y={y}&z={z}',
+    sub:'1234', attr:'&copy; 高德地图' },
+  { key:'tx_vec',   label:'腾讯 · 矢量',      crs:'GCJ-02', note:'偏移 300~600m',
+    url:'https://rt{s}.map.gtimg.com/realtime?z={z}&x={x}&y={y}&type=vector&style=0',
+    sub:'0123', tms:true, attr:'&copy; 腾讯地图' },
+  { key:'none',     label:'无底图',           crs:'-',      note:'' }
+];
+const BASEMAP_MAP = {};
+BASEMAPS.forEach(b => { BASEMAP_MAP[b.key] = b; });
+
 function tdtLayer(type){
   const k = CONFIG.tiandituKey;
-  const sub = '01234567';
   const mk = (layer) => L.tileLayer(
     `https://t{s}.tianditu.gov.cn/${layer}_w/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0` +
     `&LAYER=${layer}&STYLE=default&TILEMATRIXSET=w&FORMAT=tiles` +
     `&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}&tk=${k}`,
-    { ...TILE_OPTS, keepBuffer: 1, subdomains: sub, maxZoom: 18,
-              attribution: '&copy; 天地图' });
-
+    { ...TILE_OPTS, keepBuffer: 1, subdomains: '01234567', maxZoom: 18,
+      attribution: '&copy; 天地图' });
   return type === 'img'
     ? L.layerGroup([mk('img'), mk('cia')])
     : L.layerGroup([mk('vec'), mk('cva')]);
 }
-function amapLayer(type){
-  const url = type === 'sat'
-    ? 'https://webst0{s}.is.autonavi.com/appmaptile?style=6&x={x}&y={y}&z={z}'
-    : 'https://webrd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}';
-  return L.tileLayer(url, { ...TILE_OPTS, keepBuffer: 1, subdomains: '1234',
-                            maxZoom: 18, attribution: '&copy; 高德地图' });
+
+/* 按注册表创建底图图层。天地图特殊（WMTS + 底图/注记两层）。 */
+function makeBasemap(key){
+  const cfg = BASEMAP_MAP[key];
+  if (!cfg || key === 'none') return null;
+  if (key.startsWith('tdt_')) return tdtLayer(key === 'tdt_img' ? 'img' : 'vec');
+  const opts = { ...TILE_OPTS, keepBuffer: 1, maxZoom: 18, attribution: cfg.attr || '' };
+  if (cfg.sub) opts.subdomains = cfg.sub;
+  if (cfg.tms) opts.tms = true;
+  return L.tileLayer(cfg.url, opts);
 }
 
 /* ---------------- 地图初始化 ---------------- */
@@ -543,15 +569,27 @@ function attachBaseRetry(layer, limit){
 
 let baseLayer = null;
 
+/* 底图选择下拉由注册表生成，避免 HTML 与 JS 两处维护同一份清单 */
+function buildBaseOptions(){
+  const sel = document.getElementById('baseSel');
+  sel.innerHTML = '';
+  for (const b of BASEMAPS){
+    const opt = document.createElement('option');
+    opt.value = b.key;
+    opt.textContent = b.note ? `${b.label}（${b.note}）` : b.label;
+    sel.appendChild(opt);
+  }
+}
+
 function setBase(kind){
   if (baseLayer){ map.removeLayer(baseLayer); baseLayer = null; }
-  document.getElementById('tdtWarn').classList.toggle('on', kind.startsWith('tdt'));
-  document.getElementById('amapWarn').classList.toggle('on', kind.startsWith('amap'));
+  const cfg = BASEMAP_MAP[kind] || {};
+  const needKey = !!cfg.needKey;
+  document.getElementById('tdtWarn').classList.toggle('on', needKey && !CONFIG.tiandituKey);
+  /* GCJ-02 的图源都提示偏移，不管具体是哪家 */
+  document.getElementById('amapWarn').classList.toggle('on', cfg.crs === 'GCJ-02');
   if (kind === 'none') return;
-  if (kind === 'tdt_vec') baseLayer = tdtLayer('vec');
-  else if (kind === 'tdt_img') baseLayer = tdtLayer('img');
-  else if (kind === 'amap_vec') baseLayer = amapLayer('vec');
-  else if (kind === 'amap_sat') baseLayer = amapLayer('sat');
+  baseLayer = makeBasemap(kind);
   if (baseLayer){
     /* 天地图返回的是 LayerGroup（底图+注记两层），给 LayerGroup 设 pane
        不会传递给子图层，必须逐层设置，否则子图层仍落在默认 tilePane。 */
@@ -559,7 +597,7 @@ function setBase(kind){
     if (typeof baseLayer.eachLayer === 'function'){
       baseLayer.eachLayer(l => { l.options.pane = 'basePane'; });
     }
-    attachBaseRetry(baseLayer, kind.startsWith('tdt') ? 3 : 1);
+    attachBaseRetry(baseLayer, kind.startsWith('tdt_') ? 3 : 1);
     baseLayer.addTo(map);
   }
 }
@@ -742,11 +780,11 @@ if (pm){
       maxNativeZoom: NATIVE_MAX_Z, // 原生最大 13 级
       maxZoom: 18,                 // 13 级以上由 Leaflet 放大父瓦片
       opacity: 0.65,
-      /* keepBuffer 取 2（Leaflet 默认值）。
-         取 3 会预取到 265 块（视口实际可见约 40 块，超取 6 倍）；
-         取 1 则拖动时瓦片频繁进出缓存、反复重建，反而更抖。
-         2 是两者的平衡点。 */
-      keepBuffer: 2,
+      /* keepBuffer 降到 1。
+         视口 1911x1053 在 z11 实际可见约 45 块，keepBuffer:2 会请求 117 块
+         （2.6 倍）。实测吞吐只有约 32 块/秒，多请求的每一块都要排队，
+         直接拖长"填满一屏"的时间。相邻层级的预取改由下方的空闲预取负责。 */
+      keepBuffer: 1,
       ...TILE_OPTS                 // 与底图同一套动画参数，保证同步
     }).addTo(map);
     uomReady = true;
@@ -765,6 +803,89 @@ if (pm){
     showError('UOM 图层创建失败', uomError);
   }
 }
+/* =====================================================================
+   相邻层级空闲预取
+
+   依据 PROF 实测：单块瓦片平均要等 80ms，交互时 10 秒内要处理 300+ 块，
+   吞吐约 32 块/秒 —— 而一屏需要 100 多块。所以缩放后要等好几秒才填满，
+   主观感受就是"缩放卡"。
+
+   这里在用户停手 600ms 后，把上下相邻层级的瓦片先取进缓存。等真正缩放
+   时这些瓦片已在本地，直接命中，缩放就"瞬时"完成。
+   只在空闲时做、视野一变立刻放弃，不干扰正在进行的操作。
+
+   注意：本块必须在 map 和 getTileEntry 都已声明之后。之前用
+   "updateLayerBadge();" 做锚点，误匹配到 bumpUomTiles 内部那处，
+   整段被塞进 setTimeout 回调里，导致每次定时器触发都重新注册一遍事件。
+   所以这里用行首无缩进的精确锚点。
+   ===================================================================== */
+let prefetchToken = 0;
+let prefetchTimer = null;
+
+/* 某一层级下覆盖当前视野的瓦片坐标 */
+function tilesCoveringView(z){
+  const b = map.getBounds();
+  const n = 1 << z;
+  const lon2x = (lon) => Math.floor((lon + 180) / 360 * n);
+  const lat2y = (lat) => {
+    const r = lat * Math.PI / 180;
+    return Math.floor((1 - Math.asinh(Math.tan(r)) / Math.PI) / 2 * n);
+  };
+  const x0 = Math.max(0, lon2x(b.getWest()));
+  const x1 = Math.min(n - 1, lon2x(b.getEast()));
+  const y0 = Math.max(0, lat2y(b.getNorth()));
+  const y1 = Math.min(n - 1, lat2y(b.getSouth()));
+  const out = [];
+  for (let x = x0; x <= x1; x++)
+    for (let y = y0; y <= y1; y++) out.push([x, y]);
+  return out;
+}
+
+async function prefetchNeighborZooms(){
+  if (!pm && !tileWorker) return;
+  const token = ++prefetchToken;
+  const z = map.getZoom();
+
+  /* 收集上下相邻层级的瓦片；超过原生 13 级时实际用的是 13 级瓦片，需去重 */
+  const list = [];
+  const seen = new Set();
+  for (const zz of [z + 1, z - 1]){
+    if (zz < 0 || zz > 18) continue;
+    const shift = Math.max(0, zz - NATIVE_MAX_Z);
+    const nz = Math.min(zz, NATIVE_MAX_Z);
+    for (const [x, y] of tilesCoveringView(zz)){
+      const key = nz + '/' + (x >> shift) + '/' + (y >> shift);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      if (tileStore.has(key)) continue;
+      list.push(key);
+    }
+  }
+  if (!list.length) return;
+
+  /* 分批并发，每批之间让出主线程；视野一变（token 变化）立即放弃 */
+  const BATCH = 6;
+  let done = 0;
+  for (let i = 0; i < list.length; i += BATCH){
+    if (token !== prefetchToken) return;
+    await Promise.all(list.slice(i, i + BATCH).map(k => {
+      const parts = k.split('/');
+      return getTileEntry(+parts[0], +parts[1], +parts[2]).catch(() => {});
+    }));
+    done += Math.min(BATCH, list.length - i);
+    await new Promise(r => setTimeout(r, 0));
+  }
+  if (token === prefetchToken){
+    report('PREFETCH', { zoom: z, tiles: done });
+  }
+}
+
+map.on('moveend zoomend', () => {
+  prefetchToken++;                       // 取消进行中的预取
+  clearTimeout(prefetchTimer);
+  prefetchTimer = setTimeout(prefetchNeighborZooms, 600);
+});
+
 updateLayerBadge();
 
 /* ---------------- 大疆禁飞/限飞区 ---------------- */
@@ -1274,11 +1395,14 @@ if (window.PerformanceObserver){
   requestAnimationFrame(tick);
 })();
 
+buildBaseOptions();
 if (CONFIG.tiandituKey){
   setBase('tdt_vec');
   document.getElementById('tdtKey').value = CONFIG.tiandituKey;
 } else {
-  setBase('amap_vec');
+  /* 默认用 Esri 卫星影像：WGS84 与数据同系无偏移、无需 key，
+     且是独立 CDN —— 天地图被限流时它不受影响 */
+  setBase('esri_img');
 }
 
 /* 数据就绪后隐藏加载层；无论成败都要能继续用 */
