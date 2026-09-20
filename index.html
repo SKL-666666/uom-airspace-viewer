@@ -339,7 +339,7 @@
    alpha 严格为 0 或 255，无抗锯齿中间值，因此判定无歧义。
    瓦片缺失 ⇒ 该区域无适飞空域。 */
 /* 构建标识：用来确认浏览器实际加载的是哪一版，排查缓存问题 */
-const BUILD = 'v15.3';
+const BUILD = 'v15.4';
 
 /* 加载层兜底：放在脚本最前面注册。
    之前把它放在末尾，一旦中间某处抛错就永远不执行，页面会卡死在
@@ -509,6 +509,22 @@ const CONFIG = {
   custom: []          // 用户自定义图源 [{key,label,url,sub,tms}]
 };
 KEYS.forEach(k => { CONFIG.keys[k.id] = localStorage.getItem('uom_key_' + k.id) || ''; });
+
+/* 旧版本把天地图 key 存在 'uom_tdt_key'，后来统一成 'uom_key_<id>' 时漏了迁移，
+   导致老用户存过的 key 变成孤儿数据 —— 天地图带着空 tk 请求会被 WAF 拦掉
+   （返回 418），表现为"底图出不来"。这里做一次性迁移。 */
+(function migrateOldKeys(){
+  const LEGACY = { tdt: 'uom_tdt_key' };
+  for (const id in LEGACY){
+    if (CONFIG.keys[id]) continue;                 // 新键已有值，不动
+    let v = '';
+    try { v = localStorage.getItem(LEGACY[id]) || ''; } catch(e){ v = ''; }
+    if (!v) continue;
+    CONFIG.keys[id] = v;
+    try { localStorage.setItem('uom_key_' + id, v); } catch(e){}
+    report('KEY_MIGRATED', { id: id, from: LEGACY[id], len: v.length });
+  }
+})();
 try {
   CONFIG.custom = JSON.parse(localStorage.getItem('uom_custom_src') || '[]') || [];
 } catch(e){ CONFIG.custom = []; }
@@ -719,7 +735,24 @@ map.createPane('uomPane').style.zIndex = 300;
    注意：不能用 layer.redraw() —— 它会清空全部瓦片重新加载，拖动时触发
    就是整屏闪烁。这里直接对失败的那个 <img> 重新赋值 src，只影响它自己。 */
 function attachBaseRetry(layer, limit){
-  const retryOne = (e) => {
+  /* 失败计数：同一个底图短时间大量失败时，把原因直接说到界面上，
+     省得靠猜（天地图无有效 key 时 WAF 会返回 418，表现就是"底图不出来"）。 */
+  let errCount = 0, reported = false;
+  const resetErr = () => {
+    if (reported) hideBaseWarn();     // 恢复正常后把提示收掉
+    errCount = 0; reported = false;
+  };
+
+  const onErr = (e) => {
+    errCount++;
+    if (!reported && errCount >= 4){
+      reported = true;
+      showBaseWarn('底图瓦片加载失败（已连续 ' + errCount + ' 块）。' +
+        '常见原因：key 无效或已过期、该 key 配额用尽、或网络拦截。' +
+        '可换用其它底图，右侧「API Key」区可重新填写。');
+      report('BASE_TILE_ERR', { kind: document.getElementById('baseSel').value,
+                                count: errCount });
+    }
     const img = e && e.tile;
     if (!img || !img.src) return;
     const n = (img._uomRetry = (img._uomRetry || 0) + 1);
@@ -728,8 +761,25 @@ function attachBaseRetry(layer, limit){
     img.src = '';
     setTimeout(() => { img.src = src; }, 900 * n);
   };
-  if (typeof layer.eachLayer === 'function') layer.eachLayer(l => l.on('tileerror', retryOne));
-  else layer.on('tileerror', retryOne);
+  const onLoad = () => { if (errCount) resetErr(); };
+
+  if (typeof layer.eachLayer === 'function'){
+    layer.eachLayer(l => { l.on('tileerror', onErr); l.on('tileload', onLoad); });
+  } else {
+    layer.on('tileerror', onErr); layer.on('tileload', onLoad);
+  }
+}
+
+/* 底图警告与缺 key 提示共用同一个区域 */
+function showBaseWarn(html){
+  const warn = document.getElementById('tdtWarn');
+  if (!warn) return;
+  warn.innerHTML = html;
+  warn.classList.add('on');
+}
+function hideBaseWarn(){
+  const warn = document.getElementById('tdtWarn');
+  if (warn) warn.classList.remove('on');
 }
 
 let baseLayer = null;
@@ -768,6 +818,7 @@ function currentBaseCfg(kind){
 
 function setBase(kind){
   if (baseLayer){ map.removeLayer(baseLayer); baseLayer = null; }
+  hideBaseWarn();                       // 换底图先清掉上一张的提示
   const cfg = currentBaseCfg(kind) || {};
   const missingKey = cfg.keyId && !CONFIG.keys[cfg.keyId];
   const warn = document.getElementById('tdtWarn');
@@ -783,6 +834,9 @@ function setBase(kind){
   document.getElementById('amapWarn').classList.toggle(
     'on', cfg.crs === 'GCJ-02' || cfg.crs === 'BD-09');
   if (kind === 'none') return;
+  /* 缺 key 就不要创建图层：否则会带着空参数去请求，
+     换来一堆注定失败的响应（天地图无 tk 会被 WAF 返回 418）。 */
+  if (missingKey) return;
   baseLayer = kind.indexOf('custom:') === 0 ? makeTileLayer(cfg) : makeBasemap(kind);
   if (baseLayer){
     /* 天地图返回的是 LayerGroup（底图+注记两层），给 LayerGroup 设 pane
