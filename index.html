@@ -291,7 +291,7 @@
    alpha 严格为 0 或 255，无抗锯齿中间值，因此判定无歧义。
    瓦片缺失 ⇒ 该区域无适飞空域。 */
 /* 构建标识：用来确认浏览器实际加载的是哪一版，排查缓存问题 */
-const BUILD = 'v10';
+const BUILD = 'v11';
 
 /* 诊断上报：把浏览器里的真实状态回传到本地服务器，落盘成 diag.log。
    排查时截图里的文字读不出来，直接回传文本最省事。 */
@@ -342,6 +342,13 @@ function bumpUomTiles(ok){
   // 合并刷新，别让每次瓦片都触发一次 DOM 写入
   if (uomStatTimer) return;
   uomStatTimer = setTimeout(() => { uomStatTimer = null; updateLayerBadge(); }, 250);
+}
+
+/* 由 worker 上报的 header 范围设置图层 bounds */
+function applyUomBounds(){
+  if (!uomBounds || !uomLayer) return;
+  uomLayer.options.bounds = L.latLngBounds(uomBounds[0], uomBounds[1]);
+  uomLayer.redraw();
 }
 
 const SUITABLE_RGBA = [41, 128, 185, 255];
@@ -470,9 +477,62 @@ function setBase(kind){
 let pm = null, uomLayer = null;
 let uomReady = false;
 let uomError = '';
+let uomBounds = null;          // 由 worker 上报的 header 范围
 
-/* pmtiles 默认缓存只有 100 条；一屏就要 20–40 个瓦片，加上目录项很快被
-   挤爆并反复发 Range 请求，这是缩放卡顿的主因。放大到 1000 条。 */
+/* 取数走 Web Worker。
+   PMTiles 每次取瓦片都要做 varint 解码、目录二分查找、gzip 解压
+   （叶子目录解出来 528KB / 4096 项），全在 JS 层。一屏几百块瓦片同时
+   加载时这些计算全部堆在主线程，实测造成 80~136ms 的连续长任务。
+   放进 Worker 后主线程只剩「拿 ArrayBuffer → 建 blob → 塞给 img」。 */
+let tileWorker = null;
+let workerSeq = 0;
+const workerPending = new Map();
+let workerReady = false;
+let workerFailed = false;
+
+try {
+  tileWorker = new Worker('tile-worker.js');
+  tileWorker.onmessage = (ev) => {
+    const m = ev.data;
+    if (m && m.ready !== undefined){
+      workerReady = !!m.ready;
+      if (m.ready && m.header){
+        uomBounds = [[m.header.minLat, m.header.minLon],
+                     [m.header.maxLat, m.header.maxLon]];
+        applyUomBounds();
+      } else if (!m.ready) {
+        workerFailed = true;
+        console.warn('Worker 内 PMTiles 初始化失败:', m.error);
+        report('WORKER_HEADER_FAIL', String(m.error));
+      }
+      return;
+    }
+    const p = workerPending.get(m.id);
+    if (!p) return;
+    workerPending.delete(m.id);
+    if (m.error) p.reject(new Error(m.error));
+    else p.resolve(m.data);
+  };
+  tileWorker.onerror = (e) => {
+    workerFailed = true;
+    console.error('tile-worker 出错', e);
+    report('WORKER_ERROR', (e && e.message) || 'unknown');
+  };
+} catch(e){
+  tileWorker = null;
+  workerFailed = true;
+  console.warn('无法创建 Worker，回退到主线程取数', e);
+}
+
+function workerGetTile(z, x, y){
+  return new Promise((resolve, reject) => {
+    const id = ++workerSeq;
+    workerPending.set(id, { resolve, reject });
+    tileWorker.postMessage({ id, z, x, y });
+  });
+}
+
+/* 主线程直连（Worker 不可用时的回退路径） */
 try {
   pm = new pmtiles.PMTiles('data/uom-shifei.pmtiles',
                            new pmtiles.SharedPromiseCache(1000));
@@ -481,9 +541,24 @@ try {
   console.error('PMTiles 初始化失败', e);
 }
 
+/* 取一块瓦片的原始字节：优先 Worker，失败回退主线程 */
+async function fetchTileBytes(z, x, y){
+  if (tileWorker && !workerFailed){
+    try {
+      return await workerGetTile(z, x, y);
+    } catch(e){
+      report('WORKER_FETCH_FAIL', String((e && e.message) || e));
+      workerFailed = true;             // 之后走回退，不再反复报错
+    }
+  }
+  if (!pm) return null;
+  const res = await pm.getZxy(z, x, y);
+  return (res && res.data && res.data.byteLength) ? res.data : null;
+}
+
 /* 瓦片缓存：显示层与「点击判定」共用同一份数据，同一瓦片不会取两次。
    用 Map 的插入顺序当 LRU。
-   entry 结构：{ data: ArrayBuffer, url?: string, pixels?: Uint8ClampedArray } */
+   entry 结构：{ data: ArrayBuffer, pixels?: Uint8ClampedArray } */
 const tileStore = new Map();
 const TILE_STORE_MAX = 600;
 const tileInflight = new Map();   // key -> Promise，用于合并同一瓦片的并发请求
@@ -510,8 +585,8 @@ async function getTileEntry(z, x, y){
   const p = (async () => {
     let entry = null;
     try {
-      const res = await pm.getZxy(z, x, y);
-      if (res && res.data && res.data.byteLength) entry = { data: res.data };
+      const data = await fetchTileBytes(z, x, y);
+      if (data && data.byteLength) entry = { data };
     } catch(e){ entry = null; }
     tileStore.set(key, entry);            // 找不到也缓存 null，避免反复查
     while (tileStore.size > TILE_STORE_MAX) {
@@ -583,12 +658,8 @@ if (pm){
     });
     /* 数据只覆盖中国及周边（约 73~135.5E, 17.5~54N）。
        设上 bounds 后，视野移出该范围时 Leaflet 不再请求瓦片，
-       省掉大量注定查不到的目录遍历。 */
-    pm.getHeader().then(h => {
-      uomLayer.options.bounds = L.latLngBounds(
-        [h.minLat, h.minLon], [h.maxLat, h.maxLon]);
-      uomLayer.redraw();
-    }).catch(() => {});
+       省掉大量注定查不到的目录遍历。范围由 worker 读取 header 后上报。 */
+    applyUomBounds();
   } catch(e){
     uomError = e.message || String(e);
     console.error('UOM 图层创建失败', e);
@@ -954,18 +1025,14 @@ setTimeout(async () => {
     mapSize: [map.getSize().x, map.getSize().y],
     dpr: window.devicePixelRatio
   };
-  if (pm) {
+  if (pm || tileWorker) {
     try {
       let t = performance.now();
-      const h = await pm.getHeader();
-      info.headerMs = Math.round(performance.now() - t);
-      info.tileType = h.tileType;
-      info.nativeZoom = [h.minZoom, h.maxZoom];
-      t = performance.now();
-      const r = await pm.getZxy(5, 25, 12);   // 已知有数据的瓦片
+      const data = await fetchTileBytes(5, 25, 12);   // 已知有数据的瓦片
       info.getZxyMs = Math.round(performance.now() - t);
-      info.getZxyOK = !!(r && r.data);
-      info.getZxyBytes = r && r.data ? r.data.byteLength : 0;
+      info.getZxyOK = !!(data && data.byteLength);
+      info.getZxyBytes = data ? data.byteLength : 0;
+      info.viaWorker = !!(tileWorker && !workerFailed);
     } catch(e) {
       info.pmTestError = (e && e.message) || String(e);
     }
