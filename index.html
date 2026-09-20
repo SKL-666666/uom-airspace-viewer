@@ -291,7 +291,7 @@
    alpha 严格为 0 或 255，无抗锯齿中间值，因此判定无歧义。
    瓦片缺失 ⇒ 该区域无适飞空域。 */
 /* 构建标识：用来确认浏览器实际加载的是哪一版，排查缓存问题 */
-const BUILD = 'v12';
+const BUILD = 'v12.1-prof';
 
 /* 诊断上报：把浏览器里的真实状态回传到本地服务器，落盘成 diag.log。
    排查时截图里的文字读不出来，直接回传文本最省事。 */
@@ -353,6 +353,84 @@ function applyUomBounds(){
 
 const SUITABLE_RGBA = [41, 128, 185, 255];
 const NATIVE_MAX_Z = 13;
+
+/* =====================================================================
+   归因剖析（profiling）
+
+   longtask 只说明「有个 150ms 的卡顿」，不说明「是谁」。之前几轮我就是在
+   没有归因数据的情况下在候选方案之间盲选，改错两次（闪烁、更卡）。
+   这里按组件分别累计真实耗时并定期上报，把长任务拆开 —— 下一步的修改
+   才有依据，而不是再猜一轮。
+   ===================================================================== */
+const PROF = {
+  djiMs: 0, djiN: 0, djiMax: 0,        // DJI 画布重绘
+  canMs: 0, canN: 0, canMax: 0,        // 全部 canvas 渲染器重绘
+  tileMs: 0, tileN: 0, tileMax: 0,     // 瓦片主线程处理（blob/URL/src）
+  tileWaitMs: 0, tileWaitN: 0,         // 瓦片取数等待（Worker 往返）
+  viewN: 0                             // moveend + zoomend 次数
+};
+let profLast = performance.now();
+
+function profReport(){
+  const now = performance.now();
+  const span = Math.round((now - profLast) / 1000);
+  if (span <= 0) return;
+  profLast = now;
+  report('PROF', {
+    span: span + 's',
+    djiRedraw: PROF.djiN
+      ? Math.round(PROF.djiMs) + 'ms/' + PROF.djiN + '次(峰值' + Math.round(PROF.djiMax) + ')'
+      : '-',
+    canvasAll: PROF.canN
+      ? Math.round(PROF.canMs) + 'ms/' + PROF.canN + '次(峰值' + Math.round(PROF.canMax) + ')'
+      : '-',
+    tileMain: PROF.tileN
+      ? Math.round(PROF.tileMs) + 'ms/' + PROF.tileN + '块(峰值' + Math.round(PROF.tileMax) + ')'
+      : '-',
+    tileWait: PROF.tileWaitN ? Math.round(PROF.tileWaitMs / PROF.tileWaitN) + 'ms均' : '-',
+    viewEvents: PROF.viewN
+  });
+  PROF.djiMs = PROF.djiN = PROF.djiMax = 0;
+  PROF.canMs = PROF.canN = PROF.canMax = 0;
+  PROF.tileMs = PROF.tileN = PROF.tileMax = 0;
+  PROF.tileWaitMs = PROF.tileWaitN = 0;
+  PROF.viewN = 0;
+}
+
+/* 包住所有 canvas 渲染器的重绘（含地图默认渲染器）。
+   Leaflet 每次 moveend/zoomend 都会清空并重画整个画布，
+   这是长任务的头号嫌疑，必须精确测量而不是推测。
+   在原型上包一次，避免和实例包装重复计数；
+   DJI 渲染器用 _djiProf 标记以便单独归因。 */
+(function(){
+  if (!L.Canvas || !L.Canvas.prototype || !L.Canvas.prototype._redraw) return;
+  const proto = L.Canvas.prototype;
+  if (proto._redraw._profWrapped) return;
+  const orig = proto._redraw;
+  const wrapped = function(){
+    const t0 = performance.now();
+    const out = orig.apply(this, arguments);
+    const dt = performance.now() - t0;
+    PROF.canMs += dt; PROF.canN++;
+    if (dt > PROF.canMax) PROF.canMax = dt;
+    if (this._djiProf){
+      PROF.djiMs += dt; PROF.djiN++;
+      if (dt > PROF.djiMax) PROF.djiMax = dt;
+    }
+    return out;
+  };
+  wrapped._profWrapped = true;
+  proto._redraw = wrapped;
+})();
+
+/* 标记 DJI 渲染器，供上面单独归因 */
+function profTagDjiRenderer(r){
+  if (r) r._djiProf = true;
+  return r;
+}
+
+/* 视图事件计数：判断"卡"是否伴随大量 moveend/zoomend */
+map.on('moveend zoomend viewreset', () => { PROF.viewN++; });
 
 const UOM_DATA_DATE = '2026-05-23';
 const DJI_DATA_DATE = '2026-06-03';
@@ -611,8 +689,13 @@ const UomLayer = L.GridLayer.extend({
     img.alt = '';
     /* 设了 maxNativeZoom=13 后，Leaflet 在放大超过 13 级时会把
        coords.z 钳到 13 并拉伸显示，这里直接用 coords 即可 */
+    const _tWait = performance.now();
     getTileEntry(coords.z, coords.x, coords.y).then(entry => {
-      if (!entry){ done(null, img); return; }   // 该处无适飞数据，留空
+      /* 归因：区分"取数等待"与"主线程处理"。取数等待是异步的、不占主线程；
+         真正影响流畅度的是下面这段同步工作（建 blob、建 URL、设置 src）。 */
+      PROF.tileWaitMs += performance.now() - _tWait; PROF.tileWaitN++;
+      const _tMain = performance.now();
+      if (!entry){ PROF.tileMs += performance.now() - _tMain; PROF.tileN++; done(null, img); return; }
       /* 每次渲染新建 URL，load 完立即释放。
          不缓存 URL：一旦被 revoke 而 img 仍引用它，图片会失效变白。 */
       const url = URL.createObjectURL(new Blob([entry.data], { type:'image/png' }));
@@ -620,6 +703,9 @@ const UomLayer = L.GridLayer.extend({
       img.onload  = () => { release(); done(null, img); };
       img.onerror = () => { release(); bumpUomTiles(false); done(null, img); };
       img.src = url;
+      const _dt = performance.now() - _tMain;
+      PROF.tileMs += _dt; PROF.tileN++;
+      if (_dt > PROF.tileMax) PROF.tileMax = _dt;
     }).catch(err => {
       /* 关键：这里绝不能静默吞掉。之前写成 .catch(()=>done(null,img))
          导致取数失败时既不计数也不报错，页面上完全看不出问题。
@@ -707,7 +793,7 @@ function djiTierForZoom(z){
 function buildDjiLayer(gj){
   return L.geoJSON(gj, {
     /* tolerance:0 让 canvas 命中测试不做额外容差，加快交互 */
-    renderer: L.canvas({ padding: 0.5, tolerance: 0 }),
+    renderer: profTagDjiRenderer(L.canvas({ padding: 0.5, tolerance: 0 })),
     /* 几何抽稀，减少每次重绘要处理的点数 */
     smoothFactor: 2.5,
     style: f => Object.assign(
@@ -1166,6 +1252,7 @@ if (window.PerformanceObserver){
         frames: frames,
         zoom: map.getZoom()
       });
+      profReport();   // 同时上报各组件耗时归因
       frames = 0; t0 = now; worst = 0;
     }
     requestAnimationFrame(tick);
