@@ -285,16 +285,28 @@
    alpha 严格为 0 或 255，无抗锯齿中间值，因此判定无歧义。
    瓦片缺失 ⇒ 该区域无适飞空域。 */
 /* 构建标识：用来确认浏览器实际加载的是哪一版，排查缓存问题 */
-const BUILD = 'v5';
+const BUILD = 'v6';
+
+/* 诊断上报：把浏览器里的真实状态回传到本地服务器，落盘成 diag.log。
+   排查时截图里的文字读不出来，直接回传文本最省事。 */
+function report(tag, obj){
+  try {
+    const body = '[' + new Date().toLocaleTimeString() + '] ' + tag + ' ' +
+                 (typeof obj === 'string' ? obj : JSON.stringify(obj));
+    fetch('/__diag', { method:'POST', body, cache:'no-store' }).catch(() => {});
+  } catch(e){ /* 上报失败不能影响页面 */ }
+}
 
 /* 任何未捕获错误都显示到页面上，不再只留在控制台里"静默失败" */
 function showError(title, detail){
   const bar = document.getElementById('errbar');
-  if (!bar) return;
-  bar.innerHTML = '<span class="x" id="errX">×</span><b>' + title + '</b>\n' + (detail || '');
-  bar.classList.add('on');
-  const x = document.getElementById('errX');
-  if (x) x.onclick = () => bar.classList.remove('on');
+  if (bar){
+    bar.innerHTML = '<span class="x" id="errX">×</span><b>' + title + '</b>\n' + (detail || '');
+    bar.classList.add('on');
+    const x = document.getElementById('errX');
+    if (x) x.onclick = () => bar.classList.remove('on');
+  }
+  report('ERROR', title + ' | ' + (detail || ''));
 }
 window.addEventListener('error', e => {
   if (e.message) showError('页面脚本出错', e.message + '\n' + (e.filename || '') + ':' + (e.lineno || ''));
@@ -476,9 +488,19 @@ const UomLayer = L.GridLayer.extend({
       const url = URL.createObjectURL(new Blob([entry.data], { type:'image/png' }));
       const release = () => URL.revokeObjectURL(url);
       img.onload = () => { release(); done(null, img); };
-      img.onerror = () => { release(); done(null, img); };
+      img.onerror = () => { release(); bumpUomTiles(false); done(null, img); };
       img.src = url;
-    }).catch(() => done(null, img));
+    }).catch(err => {
+      /* 关键：这里绝不能静默吞掉。之前写成 .catch(()=>done(null,img))
+         导致取数失败时既不计数也不报错，页面上完全看不出问题。
+         现在计数 + 上报具体原因（只在头几次上报，避免刷屏）。 */
+      bumpUomTiles(false);
+      if (uomTileErrs <= 3) {
+        report('TILE_FETCH_FAIL',
+          `z${coords.z}/${coords.x}/${coords.y} :: ${(err && err.message) || err}`);
+      }
+      done(null, img);
+    });
     return img;
   }
 });
@@ -793,6 +815,44 @@ document.getElementById('bdUom').title = '第三方归档数据，非实时';
 document.getElementById('bdVer').title = '构建版本，用于确认浏览器加载的是最新代码';
 
 if (uomError) showError('PMTiles 初始化失败', uomError + '\n（数据文件：data/uom-shifei.pmtiles）');
+
+/* ---------------- 启动自检上报 ----------------
+   把浏览器里的真实状态回传到服务器写进 diag.log。
+   这样排查时不必依赖截图（截图里的文字程序读不出来）。 */
+setTimeout(async () => {
+  const info = {
+    build: BUILD,
+    pmtilesLib: typeof pmtiles !== 'undefined',
+    pmObj: !!pm,
+    uomReady: uomReady,
+    uomError: uomError || null,
+    tilesLoaded: uomTiles,
+    tilesFailed: uomTileErrs,
+    zoom: map.getZoom(),
+    center: [+map.getCenter().lat.toFixed(3), +map.getCenter().lng.toFixed(3)],
+    basemap: document.getElementById('baseSel').value,
+    tdtKeySet: !!CONFIG.tiandituKey,
+    mapSize: [map.getSize().x, map.getSize().y],
+    dpr: window.devicePixelRatio
+  };
+  if (pm) {
+    try {
+      let t = performance.now();
+      const h = await pm.getHeader();
+      info.headerMs = Math.round(performance.now() - t);
+      info.tileType = h.tileType;
+      info.nativeZoom = [h.minZoom, h.maxZoom];
+      t = performance.now();
+      const r = await pm.getZxy(5, 25, 12);   // 已知有数据的瓦片
+      info.getZxyMs = Math.round(performance.now() - t);
+      info.getZxyOK = !!(r && r.data);
+      info.getZxyBytes = r && r.data ? r.data.byteLength : 0;
+    } catch(e) {
+      info.pmTestError = (e && e.message) || String(e);
+    }
+  }
+  report('STARTUP', info);
+}, 5000);
 
 if (CONFIG.tiandituKey){
   setBase('tdt_vec');

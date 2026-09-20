@@ -55,6 +55,38 @@ class RangeHandler(SimpleHTTPRequestHandler):
     def do_GET(self):
         self._serve(head_only=False)
 
+    def do_POST(self):
+        """接收前端诊断上报，追加写入 diag.log。
+
+        这么做的原因：排查时只能拿到截图，而截图里的文字无法被程序读取。
+        让页面把诊断文本直接回传落盘，就能直接查看浏览器里的真实状态。
+        """
+        if self.path.split("?")[0] != "/__diag":
+            self.send_error(404, "Not found")
+            return
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = 0
+        body = self.rfile.read(n) if n else b""
+        try:
+            text = body.decode("utf-8", "replace")
+        except Exception:
+            text = repr(body)
+        try:
+            with open(os.path.join(ROOT, "diag.log"), "a", encoding="utf-8") as f:
+                f.write(text)
+                if not text.endswith("\n"):
+                    f.write("\n")
+            sys.stdout.write("[diag] " + text.strip()[:400] + "\n")
+            sys.stdout.flush()
+        except OSError:
+            pass
+        self.send_response(204)
+        self.send_header("Content-Length", "0")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+
     def _serve(self, head_only):
         path = self.translate_path(self.path)
         if os.path.isdir(path):
