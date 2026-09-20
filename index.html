@@ -188,6 +188,8 @@
 
     <label class="row"><input type="checkbox" id="lyDji" checked>
       <span class="dot" style="background:#ee8815"></span>大疆禁飞/限飞区 <span class="sub" id="djiN">—</span></label>
+    <div class="hint" style="margin:-2px 0 6px 23px;font-size:10.5px">
+      仅中国境内（含港澳台）；境外区域不显示</div>
 
     <label class="row"><input type="checkbox" id="lyZn" checked>
       <span class="dot" style="background:#ef4444"></span>ZB(SR)801 管制区 <span class="sub">非官方</span></label>
@@ -283,7 +285,7 @@
    数据来源：
      UOM 适飞空域   data/uom-shifei.pmtiles   第三方归档 thezzisu/uomtiles
                     数据实际抓取于 2026-05-23（取自 PMTiles 元数据 version 字段）
-    大疆禁飞/限飞   data/dji_flysafe.geojson  同上，整理自 fly-safe.dji.com
+    大疆禁飞/限飞   data/dji_cn_*.geojson     整理自 fly-safe.dji.com，仅中国境内
     ZB(SR)801       data/custom_zones.geojson 用户依据 NOTAM C0903/26 转述自行标注
    ===================================================================== */
 
@@ -291,7 +293,7 @@
    alpha 严格为 0 或 255，无抗锯齿中间值，因此判定无歧义。
    瓦片缺失 ⇒ 该区域无适飞空域。 */
 /* 构建标识：用来确认浏览器实际加载的是哪一版，排查缓存问题 */
-const BUILD = 'v12.1-prof';
+const BUILD = 'v14-cn';
 
 /* 诊断上报：把浏览器里的真实状态回传到本地服务器，落盘成 diag.log。
    排查时截图里的文字读不出来，直接回传文本最省事。 */
@@ -778,9 +780,10 @@ let djiJudge = null;      // 全量要素，仅供点击判定使用（见下）
    点击判定必须用全量数据（djiJudge），否则低缩放下会漏判小区域 ——
    空域信息漏判是安全问题，不能为了省性能牺牲正确性。 */
 const DJI_TIERS = [
-  { maxZoom: 5,  file: 'data/dji_low.geojson',  label: '概览' },
-  { maxZoom: 99, file: 'data/dji_full.geojson', label: '详细' }
+  { maxZoom: 5,  file: 'data/dji_cn_low.geojson',  label: '概览' },
+  { maxZoom: 99, file: 'data/dji_cn_full.geojson', label: '详细' }
 ];
+const DJI_SCOPE = '中国境内(含港澳台)';   // 数据范围，界面要写清楚
 const djiCache = new Map();      // tierIndex -> L.GeoJSON
 const djiLoading = new Set();
 let djiOnState = true;
