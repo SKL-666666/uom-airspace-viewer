@@ -198,11 +198,32 @@ UOM/
 
 ## 打包与分发
 
-| 平台 | 产物 | 构建方式 |
-|------|------|---------|
-| Windows | `UOM-Viewer-Windows-x64.exe` | `python -m PyInstaller build_exe.spec` |
-| HarmonyOS | `UOM-Viewer-HarmonyOS-unsigned.hap` | `bash harmony/scripts/build_hap.sh` |
-| Android | 需 CI 构建 | 推 tag 触发 `.github/workflows/build-apk.yml` |
+三平台产物都在 [Releases](../../releases)。
+
+| 平台 | 产物 | 大小 | 构建方式 |
+|------|------|------|---------|
+| Windows | `UOM-Viewer-Windows-x64.exe` | 45 MB | `python -m PyInstaller build_exe.spec` |
+| Android | `UOM-Viewer-Android.apk` | 2.4 MB | 推 tag 触发 CI（本机无 Android SDK） |
+| HarmonyOS | `UOM-Viewer-HarmonyOS-unsigned.hap` | 104 KB | `bash harmony/scripts/build_hap.sh` |
+
+### Android
+
+本机没有 Android SDK，因此走 GitHub Actions 云端构建：推一个 `v*` tag 即
+自动构建、签名并附加到同名 Release。
+
+```bash
+git tag v1.0.2 && git push origin v1.0.2
+```
+
+> 构建踩过的坑：`androidx.webkit` 会传递依赖老版 `kotlin-stdlib-jdk8`，
+> 与新版 `kotlin-stdlib` 产生重复类
+> （`kotlin.collections.jdk8.CollectionsJDK8Kt`）导致
+> `checkReleaseDuplicateClasses` 失败。该项目其实用不到 `androidx.webkit`
+> （WebView API 全在 `android.webkit` 里），已移除，并加了
+> `resolutionStrategy.force` 统一 Kotlin 标准库版本作为兜底。
+
+签名用的是一次性密钥（`keytool` 现场生成），只为让 APK 可安装，
+不适合上架。
 
 ### Windows
 
