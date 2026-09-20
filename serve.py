@@ -10,10 +10,14 @@
 
 用法: python serve.py [端口]
 """
+import collections
+import io
+import json
 import os
 import re
 import socket
 import sys
+import threading
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from socketserver import ThreadingMixIn
 
@@ -33,6 +37,125 @@ MIME = {
 }
 
 RANGE_RE = re.compile(r"bytes=(\d*)-(\d*)$")
+
+
+# =====================================================================
+# UOM 瓦片服务：把 4 张 256px 原始瓦片合成一张 512px，减少请求数
+#
+# 起因：PMTiles 原始数据是 256px 瓦片，客户端每张瓦片要发 1 个 Range 请求。
+# 一屏 1911x1053 需要 40 多张，加上预取就是上百个请求，而浏览器对同一
+# 域名只开 6 条连接 —— 请求数就是"瓦片刷新慢"的直接原因。
+#
+# 服务端合成 512px 瓦片后，同样的屏幕面积只需 12 张，请求数降到 1/3.3；
+# 同时客户端不再需要在浏览器里解析 PMTiles。
+#
+# 坐标约定：客户端用 tileSize:512 + zoomOffset:-1，所以 URL 里的 Z 比原生
+# 层级小 1。URL 的 (Z, X, Y) 对应原生 (Z+1) 层级的 (2X..2X+1, 2Y..2Y+1)。
+# =====================================================================
+UOM_RE = re.compile(r"^/uom/(\d+)/(\d+)/(\d+)\.png$")
+UOM_PROBE_RE = re.compile(r"^/uom/probe$")
+
+_pmtiles_lock = threading.Lock()
+_pmtiles = None
+_tile_cache = collections.OrderedDict()
+_tile_cache_lock = threading.Lock()
+TILE_CACHE_MAX = 600          # 约 600 张 512px PNG，内存占用可控
+
+
+def _get_pmtiles():
+    """延迟加载 PMTiles 读取器（复用 pmtiles_tool 里已验证的实现）"""
+    global _pmtiles
+    if _pmtiles is None:
+        with _pmtiles_lock:
+            if _pmtiles is None:
+                sys.path.insert(0, ROOT)
+                import pmtiles_tool
+                _pmtiles = pmtiles_tool.PMTiles(
+                    os.path.join(ROOT, "data", "uom-shifei.pmtiles"))
+    return _pmtiles
+
+
+def _cache_get(key):
+    with _tile_cache_lock:
+        data = _tile_cache.get(key)
+        if data is not None:
+            _tile_cache.move_to_end(key)
+        return data
+
+
+def _cache_put(key, data):
+    with _tile_cache_lock:
+        _tile_cache[key] = data
+        while len(_tile_cache) > TILE_CACHE_MAX:
+            _tile_cache.popitem(last=False)
+
+
+def build_uom_tile(Z, X, Y):
+    """合成一张 512x512 PNG。返回 bytes 或 None（该处无数据）"""
+    key = (Z, X, Y)
+    hit = _cache_get(key)
+    if hit is not None:
+        return hit
+    try:
+        from PIL import Image
+    except ImportError:
+        return None
+    pm = _get_pmtiles()
+    nz = Z + 1                      # 原生层级
+    canvas = Image.new("RGBA", (512, 512), (0, 0, 0, 0))
+    got = 0
+    for i in range(2):
+        for j in range(2):
+            raw = pm.get_tile(nz, X * 2 + i, Y * 2 + j)
+            if not raw:
+                continue
+            try:
+                img = Image.open(io.BytesIO(raw)).convert("RGBA")
+            except Exception:
+                continue
+            canvas.paste(img, (i * 256, j * 256), img)
+            got += 1
+    if not got:
+        _cache_put(key, b"")        # 缓存"无数据"，避免反复查目录
+        return b""
+    data = _encode_binary_png(canvas)
+    _cache_put(key, data)
+    return data
+
+
+# UOM 数据只有两种像素：全透明 与 固定蓝色 RGBA(41,128,185,255)。
+# 用 2 色调色板 PNG8 编码，比全彩 RGBA PNG 快数倍、体积也小得多，
+# 而且和原始数据格式一致（原始就是 PNG8 二值图）。
+UOM_COLOR = (41, 128, 185)
+
+
+def _encode_binary_png(canvas):
+    from PIL import Image
+    size = canvas.size
+    # 用 alpha 通道做二值掩码
+    alpha = canvas.getchannel("A").point(lambda v: 255 if v >= 128 else 0, "L")
+    pal = Image.new("P", size, 0)
+    table = [0, 0, 0, UOM_COLOR[0], UOM_COLOR[1], UOM_COLOR[2]] + [0] * 762
+    pal.putpalette(table)
+    pal.paste(1, (0, 0, size[0], size[1]), alpha)   # 适飞处标为索引 1
+    buf = io.BytesIO()
+    # transparency=0 让索引 0 全透明
+    pal.save(buf, format="PNG", optimize=False, compress_level=6, transparency=0)
+    return buf.getvalue()
+
+
+def probe_point(lon, lat):
+    """查询某点是否在适飞空域内，返回 (tile_coord, pixel_rgba)"""
+    pm = _get_pmtiles()
+    import pmtiles_tool as pt
+    z = 13
+    x, y, px, py = pt.lonlat_to_tile_pixel(lon, lat, z)
+    raw = pm.get_tile(z, x, y)
+    if not raw:
+        return f"{z}/{x}/{y}", None
+    rgba = pt.png_pixel(raw, px, py)
+    return f"{z}/{x}/{y}", rgba
+
 
 
 class RangeHandler(SimpleHTTPRequestHandler):
@@ -88,6 +211,17 @@ class RangeHandler(SimpleHTTPRequestHandler):
         self.end_headers()
 
     def _serve(self, head_only):
+        raw_path = self.path.split("?")[0]
+
+        # --- UOM 合成瓦片 ---
+        m = UOM_RE.match(raw_path)
+        if m:
+            self._serve_uom_tile(int(m.group(1)), int(m.group(2)), int(m.group(3)), head_only)
+            return
+        if raw_path == "/uom/probe":
+            self._serve_probe()
+            return
+
         path = self.translate_path(self.path)
         if os.path.isdir(path):
             path = os.path.join(path, "index.html")
@@ -150,6 +284,57 @@ class RangeHandler(SimpleHTTPRequestHandler):
                 if not head_only:
                     f.seek(start)
                     self._pump(f, length)
+
+    def _serve_uom_tile(self, Z, X, Y, head_only):
+        try:
+            data = build_uom_tile(Z, X, Y)
+        except Exception as e:
+            sys.stdout.write("[uom] tile %s/%s/%s build failed: %s\n" % (Z, X, Y, e))
+            sys.stdout.flush()
+            self.send_error(500, "tile build failed")
+            return
+        if data is None:
+            self.send_error(500, "PIL unavailable")
+            return
+        body = data if data else b""
+        self.send_response(200)
+        self.send_header("Content-Type", "image/png")
+        self.send_header("Content-Length", str(len(body)))
+        # 合成瓦片可长期缓存：数据是静态的，客户端缓存后不再重复请求
+        self.send_header("Cache-Control", "public, max-age=604800")
+        self.end_headers()
+        if not head_only and body:
+            try:
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+
+    def _serve_probe(self):
+        from urllib.parse import parse_qs, urlparse
+        q = parse_qs(urlparse(self.path).query)
+        try:
+            lon = float(q.get("lon", ["0"])[0])
+            lat = float(q.get("lat", ["0"])[0])
+        except ValueError:
+            self.send_error(400, "bad lon/lat")
+            return
+        try:
+            tile, rgba = probe_point(lon, lat)
+        except Exception as e:
+            self.send_error(500, f"probe failed: {e}")
+            return
+        payload = json.dumps({
+            "lon": lon, "lat": lat, "tile": tile,
+            "rgba": list(rgba) if rgba else None,
+            "suitable": bool(rgba and rgba[3] == 255),
+            "hasData": rgba is not None,
+        }).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(payload)
 
     def _cache_headers(self, no_cache):
         if no_cache:
