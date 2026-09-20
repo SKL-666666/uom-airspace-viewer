@@ -85,11 +85,6 @@
      所有图层共用这一个变换 —— 所以只要动画期间不插新瓦片请求，
      两层就严格同步。will-change 让它走 GPU 合成。 */
   .leaflet-map-pane{will-change:transform;backface-visibility:hidden}
-  /* 缩短缩放动画时长（Leaflet 默认 0.25s）。
-     快速滚轮时每一格都会重启这个过渡，0.25s 会让地图明显"追不上"输入。 */
-  .leaflet-zoom-anim .leaflet-zoom-animated{
-    transition:transform .13s cubic-bezier(0,0,.25,1);
-  }
   /* 注意：不要给单个瓦片加 will-change —— 一屏几百个瓦片各自提升为
      独立合成层会导致 GPU 内存暴涨、严重掉帧。这里不设。 */
 
@@ -296,7 +291,7 @@
    alpha 严格为 0 或 255，无抗锯齿中间值，因此判定无歧义。
    瓦片缺失 ⇒ 该区域无适飞空域。 */
 /* 构建标识：用来确认浏览器实际加载的是哪一版，排查缓存问题 */
-const BUILD = 'v13';
+const BUILD = 'v12';
 
 /* 诊断上报：把浏览器里的真实状态回传到本地服务器，落盘成 diag.log。
    排查时截图里的文字读不出来，直接回传文本最省事。 */
@@ -368,18 +363,14 @@ const CONFIG = {
 
 /* ---------------- 底图 ---------------- */
 /* 瓦片层动画参数（底图与 UOM 层必须一致，否则缩放不同步）。
-   缩放本身由 Leaflet 对 .leaflet-map-pane 的一次 CSS transform 完成，
-   所有图层共用这一个变换，所以两层天然同步；updateWhenZooming 只决定
-   动画期间要不要顺带取新瓦片（取，才跟手）。
+   updateWhenZooming:false 是关键 —— 缩放动画期间不发新瓦片请求，
+   整个缩放由 Leaflet 对 .leaflet-map-pane 的一次 CSS transform 完成，
+   所有图层共用这一个变换，因此严格同步且不掉帧。
    keepBuffer 只影响视口外预留几圈瓦片，不影响同步，故两者可不同：
    底图走网络，少留；UOM 是本地数据，多留换取流畅。 */
 const TILE_OPTS = {
   updateWhenIdle: false,      // 拖动过程中即时加载
-  /* 缩放动画期间也更新瓦片。
-     之前为让两层严格同步设成 false，代价是缩放过程中地图一直是拉伸的
-     旧瓦片、迟迟不出现新细节 —— 主观感受就是"不跟手"。
-     Worker 上线后取数已很快，两层都开着更新即可跟上。 */
-  updateWhenZooming: true,
+  updateWhenZooming: false,   // 动画期间不动瓦片（性能 + 同步的关键）
   tileSize: 256
 };
 
@@ -687,132 +678,110 @@ const DJI_STYLE = {
 const DJI_LABEL = {
   restricted:'禁飞区', warning:'加强警示区', authorization:'授权区', recommended:'推荐区'
 };
-let djiJudge = null;      // 全量要素，供点击判定使用
+let djiJudge = null;      // 全量要素，仅供点击判定使用（见下）
 
-/* 大疆图层：把同类型的全部环合批进一个 L.polygon，只调一次 fill()+stroke()。
+/* 大疆图层：所有缩放级别都显示，但按级别切换「用于绘制」的数据集。
 
-   为什么：4112 个多边形就是 8224 次 canvas 调用（每个多边形一次 fill
-   一次 stroke），每次重绘约 150ms。实测长任务 159~186ms 正好出现在
-   DJI 重绘时，而主线程被占住就是"鼠标缩放不跟手"的直接原因
-   （滚轮事件被排队）。
+   为什么不能一份数据走天下：全国概览（z<=5）时 94% 的多边形在屏幕上
+   不到 3 像素，肉眼完全看不见，可 Leaflet 的 canvas 每次重绘仍要为每个
+   多边形各付一次 fill() + stroke()。4112 个要素 = 8224 次 canvas 调用，
+   实测每次重绘约 160ms —— 这就是卡顿来源。
+   分级后低缩放只用 883 个要素（屏幕尺寸 >=3px 的那些），开销降到 1/4.6。
 
-   为什么不用 MultiPolygon：Leaflet 对 MultiPolygon 会拆成一堆 Polygon
-   对象（FeatureGroup），绘制调用数一点没少。
-
-   关键细节：合并后填充规则从 evenodd 变 nonzero，必须把所有环的方向
-   统一，否则重叠区域会互相抵消出现挖空 —— 视觉就错了。
-   原始数据方向不统一（1156 逆时针 / 2956 顺时针），所以这里逐环归一化。
-   verify_dji_batch.py 验证过：归一化后同向，重叠处环绕数非零，
-   nonzero 填充结果等同并集，不改变可见范围。
-
-   代价：单个区域不再有独立 popup。但点击查询卡片本来就会列出命中的
-   区域名称，信息没有丢失。 */
-const DJI_BATCH_COUNT = {};    // 各类型环数，用于界面显示
-
-function ringSignedArea(r){
-    let s = 0;
-    for (let i = 0; i < r.length - 1; i++){
-        s += (r[i+1][0] - r[i][0]) * (r[i+1][1] + r[i][1]);
-    }
-    return s;
-}
-
-/* 递归收集多边形环，并把 GeoJSON 的 [lon,lat] 转成 Leaflet 的 [lat,lng] */
-function collectDjiRings(coords, out){
-    if (typeof coords[0][0] === 'number'){
-        out.push(coords);
-    } else {
-        for (let i = 0; i < coords.length; i++) collectDjiRings(coords[i], out);
-    }
-}
-
-function buildDjiBatch(features){
-    const buckets = {};
-    const tmp = [];
-    for (const f of features){
-        const t = f.properties.type || 'warning';
-        if (!DJI_STYLE[t]) continue;
-        tmp.length = 0;
-        collectDjiRings(f.geometry.coordinates, tmp);
-        for (const ring of tmp){
-            if (ring.length < 4) continue;
-            // 统一成逆时针（lon/lat 下面积为负），再翻成 [lat,lng]
-            const r = ringSignedArea(ring) < 0 ? ring : ring.slice().reverse();
-            const ll = new Array(r.length);
-            for (let i = 0; i < r.length; i++) ll[i] = [r[i][1], r[i][0]];
-            (buckets[t] || (buckets[t] = [])).push(ll);
-        }
-    }
-    return buckets;
-}
-
-const djiLayers = [];        // 4 个合批多边形
+   注意：分级只影响「画什么」，不影响「判定什么」。
+   点击判定必须用全量数据（djiJudge），否则低缩放下会漏判小区域 ——
+   空域信息漏判是安全问题，不能为了省性能牺牲正确性。 */
+const DJI_TIERS = [
+  { maxZoom: 5,  file: 'data/dji_low.geojson',  label: '概览' },
+  { maxZoom: 99, file: 'data/dji_full.geojson', label: '详细' }
+];
+const djiCache = new Map();      // tierIndex -> L.GeoJSON
+const djiLoading = new Set();
 let djiOnState = true;
 
-function buildDjiLayers(features){
-    const buckets = buildDjiBatch(features);
-    for (const t in buckets){
-        const st = DJI_STYLE[t];
-        const layer = L.polygon(buckets[t], {
-            stroke: true, weight: 1.2, opacity: 0.85,
-            color: st.color,
-            fill: true, fillColor: st.fillColor, fillOpacity: st.fillOpacity,
-            /* 必须用 nonzero：evenodd 会让重叠区域挖空 */
-            fillRule: 'nonzero',
-            smoothFactor: 1,
-            interactive: false,      // 不参与点击命中测试，交给查询卡片
-            renderer: L.canvas({ padding: 0.5 })
-        });
-        DJI_BATCH_COUNT[t] = buckets[t].length;
-        djiLayers.push({ type: t, layer: layer });
-    }
-    syncDjiVisibility();
+function djiTierForZoom(z){
+  for (let i = 0; i < DJI_TIERS.length; i++) if (z <= DJI_TIERS[i].maxZoom) return i;
+  return DJI_TIERS.length - 1;
 }
 
+function buildDjiLayer(gj){
+  return L.geoJSON(gj, {
+    /* tolerance:0 让 canvas 命中测试不做额外容差，加快交互 */
+    renderer: L.canvas({ padding: 0.5, tolerance: 0 }),
+    /* 几何抽稀，减少每次重绘要处理的点数 */
+    smoothFactor: 2.5,
+    style: f => Object.assign(
+      { smoothFactor: 2.5 }, DJI_STYLE[f.properties.type] || DJI_STYLE.warning),
+    onEachFeature: (f, l) => {
+      const p = f.properties;
+      l.bindPopup(
+        `<b>${DJI_LABEL[p.type] || p.type}</b><br>` +
+        `${p.name || '（无名）'}<br>` +
+        `<span style="color:#888;font-size:11px">` +
+        `${p.zone_type || ''}${p.height ? ' · 限高 ' + p.height + 'm' : ''}</span>`
+      );
+    }
+  });
+}
+
+/* 把当前该显示的层级挂上、把不该显示的摘掉 */
 function syncDjiVisibility(){
-    const row = document.getElementById('djiN');
-    for (const item of djiLayers){
-        const has = map.hasLayer(item.layer);
-        if (djiOnState && !has) item.layer.addTo(map);
-        else if (!djiOnState && has) map.removeLayer(item.layer);
-    }
+  const row = document.getElementById('djiN');
+  if (!djiOnState){                          // 用户关掉了图层
+    djiCache.forEach(l => { if (map.hasLayer(l)) map.removeLayer(l); });
+    if (row) row.textContent = '已关闭';
+    return;
+  }
+  const want = djiTierForZoom(map.getZoom());
+  djiCache.forEach((l, i) => { if (i !== want && map.hasLayer(l)) map.removeLayer(l); });
+
+  const layer = djiCache.get(want);
+  if (layer){
+    if (!map.hasLayer(layer)) layer.addTo(map);
     if (row){
-        if (!djiJudge) row.textContent = '加载中…';
-        else if (!djiOnState) row.textContent = '已关闭';
-        else {
-            let n = 0;
-            for (const k in DJI_BATCH_COUNT) n += DJI_BATCH_COUNT[k];
-            row.textContent = `${n} 个`;
-        }
+      row.textContent = `${layer.getLayers().length} 个 · ${DJI_TIERS[want].label}`;
     }
+  } else {
+    if (row) row.textContent = '加载中…';
+    loadDjiTier(want);
+  }
 }
 
-/* 只加载一份全量数据：既用于绘制（合批），也用于判定。
-   判定必须用全量 —— 低缩放下若拿精简子集判定会漏判小区域。 */
-function loadDji(){
-    const t0 = performance.now();
-    fetch('data/dji_full.geojson')
-        .then(r => r.json())
-        .then(gj => {
-            djiJudge = gj.features;
-            buildDjiLayers(gj.features);
-            document.getElementById('bdDji').textContent = `大疆数据 ${DJI_DATA_DATE}`;
-            report('DJI_LOADED', {
-                features: gj.features.length,
-                batchedPolys: djiLayers.length,
-                ms: Math.round(performance.now() - t0)
-            });
-        })
-        .catch(e => {
-            console.error('大疆数据加载失败', e);
-            const row = document.getElementById('djiN');
-            if (row) row.textContent = '加载失败';
-            document.getElementById('bdDji').textContent = '大疆数据 加载失败';
-            report('DJI_LOAD_FAIL', (e && e.message) || String(e));
-        });
+function loadDjiTier(i){
+  if (djiCache.has(i) || djiLoading.has(i)) return;
+  djiLoading.add(i);
+  const t0 = performance.now();
+  const file = DJI_TIERS[i].file;
+  fetch(file)
+    .then(r => r.json())
+    .then(gj => {
+      djiCache.set(i, buildDjiLayer(gj));
+      djiLoading.delete(i);
+      /* 全量那份同时留给点击判定用（判定必须用全量，见上方说明） */
+      if (DJI_TIERS[i].maxZoom > 90) djiJudge = gj.features;
+      report('DJI_TIER_LOADED', {
+        tier: i, file, features: gj.features.length,
+        ms: Math.round(performance.now() - t0)
+      });
+      document.getElementById('bdDji').textContent = `大疆数据 ${DJI_DATA_DATE}`;
+      syncDjiVisibility();               // 当前缩放若正好需要它，立刻挂上
+    })
+    .catch(e => {
+      djiLoading.delete(i);
+      console.error('大疆数据加载失败', file, e);
+      const row = document.getElementById('djiN');
+      if (row) row.textContent = '加载失败';
+      document.getElementById('bdDji').textContent = '大疆数据 加载失败';
+      report('DJI_LOAD_FAIL', file + ' :: ' + ((e && e.message) || e));
+    });
 }
-if (window.requestIdleCallback) requestIdleCallback(loadDji, { timeout: 4000 });
-else setTimeout(loadDji, 1500);
+map.on('zoomend', syncDjiVisibility);
+
+/* 先加载概览层（1MB，快），保证全国视图马上有内容；
+   全量那份等空闲再load，用于高缩放绘制与全量判定。 */
+loadDjiTier(0);
+if (window.requestIdleCallback) requestIdleCallback(() => loadDjiTier(1), { timeout: 5000 });
+else setTimeout(() => loadDjiTier(1), 2000);
 
 /* ---------------- ZB(SR)801 自定义管制区 ---------------- */
 let zoneLayer = null, zoneData = null;
