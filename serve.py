@@ -68,6 +68,11 @@ class RangeHandler(SimpleHTTPRequestHandler):
             self.send_error(404, "File not found")
             return
 
+        ext = os.path.splitext(path)[1].lower()
+        # 代码文件不许缓存，否则改完刷新还是旧版（PMTiles 的 Range 响应
+        # 反过来要允许缓存，否则每次缩放都重新拉字节）
+        no_cache = ext in (".html", ".js", ".css", ".json", ".geojson")
+
         with f:
             size = os.fstat(f.fileno()).st_size
             ctype = self.guess_type(path)
@@ -97,6 +102,7 @@ class RangeHandler(SimpleHTTPRequestHandler):
                 self.send_header("Content-Type", ctype)
                 self.send_header("Content-Length", str(size))
                 self.send_header("Accept-Ranges", "bytes")
+                self._cache_headers(no_cache)
                 self.end_headers()
                 if not head_only:
                     self._pump(f, size)
@@ -107,10 +113,19 @@ class RangeHandler(SimpleHTTPRequestHandler):
                 self.send_header("Content-Length", str(length))
                 self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
                 self.send_header("Accept-Ranges", "bytes")
+                self._cache_headers(no_cache)
                 self.end_headers()
                 if not head_only:
                     f.seek(start)
                     self._pump(f, length)
+
+    def _cache_headers(self, no_cache):
+        if no_cache:
+            self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
+            self.send_header("Pragma", "no-cache")
+            self.send_header("Expires", "0")
+        else:
+            self.send_header("Cache-Control", "public, max-age=86400")
 
     def _pump(self, f, length):
         remaining = length

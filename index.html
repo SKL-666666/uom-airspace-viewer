@@ -87,6 +87,18 @@
   #backdrop{display:none;position:absolute;inset:0;z-index:900;background:rgba(0,0,0,.55)}
   #backdrop.on{display:block}
 
+  /* 错误横幅：任何未捕获错误都显示出来，不再静默失败 */
+  #errbar{display:none;position:absolute;top:60px;left:12px;right:12px;z-index:1500;
+          background:rgba(127,29,29,.95);border:1px solid #ef4444;color:#fecaca;
+          border-radius:10px;padding:10px 12px;font-size:12px;line-height:1.6;
+          max-height:34vh;overflow-y:auto;white-space:pre-wrap;
+          font-family:ui-monospace,Menlo,Consolas,monospace}
+  #errbar.on{display:block}
+  #errbar b{color:#fff}
+  #errbar .x{position:absolute;top:6px;right:8px;cursor:pointer;color:#fecaca;font-size:15px}
+  #bdLayer.err{background:rgba(239,68,68,.18);color:#f87171;border-color:rgba(239,68,68,.5)}
+  #bdLayer.ok{background:rgba(34,197,94,.15);color:#4ade80;border-color:rgba(34,197,94,.4)}
+
   /* ---------------- 手机竖屏 ---------------- */
   @media(max-width:760px), (max-height:520px) and (orientation:portrait){
     /* 侧栏改抽屉：从左侧滑出，铺满高度 */
@@ -131,9 +143,12 @@
   <h1>UOM 适飞空域查询</h1>
   <span class="badge" id="bdUom">适飞数据 —</span>
   <span class="badge" id="bdDji">大疆数据 —</span>
+  <span class="badge" id="bdLayer">适飞层 —</span>
   <span class="spacer"></span>
   <span class="badge" id="bdPos">经纬度 —</span>
+  <span class="badge" id="bdVer">—</span>
 </div>
+<div id="errbar"></div>
 <div id="backdrop"></div>
 
 <div class="panel" id="side">
@@ -269,6 +284,48 @@
 /* UOM 适飞层是 PNG8 二值栅格：适飞像素固定 RGBA(41,128,185,255)，
    alpha 严格为 0 或 255，无抗锯齿中间值，因此判定无歧义。
    瓦片缺失 ⇒ 该区域无适飞空域。 */
+/* 构建标识：用来确认浏览器实际加载的是哪一版，排查缓存问题 */
+const BUILD = 'v5';
+
+/* 任何未捕获错误都显示到页面上，不再只留在控制台里"静默失败" */
+function showError(title, detail){
+  const bar = document.getElementById('errbar');
+  if (!bar) return;
+  bar.innerHTML = '<span class="x" id="errX">×</span><b>' + title + '</b>\n' + (detail || '');
+  bar.classList.add('on');
+  const x = document.getElementById('errX');
+  if (x) x.onclick = () => bar.classList.remove('on');
+}
+window.addEventListener('error', e => {
+  if (e.message) showError('页面脚本出错', e.message + '\n' + (e.filename || '') + ':' + (e.lineno || ''));
+});
+window.addEventListener('unhandledrejection', e => {
+  const r = e.reason;
+  showError('未处理的异步异常', (r && (r.message || r.toString())) || String(r));
+});
+
+/* UOM 适飞层加载计数：直接显示在顶栏，能立刻看出瓦片到底有没有在加载 */
+let uomTiles = 0, uomTileErrs = 0, uomStatTimer = null;
+function updateLayerBadge(){
+  const el = document.getElementById('bdLayer');
+  if (!el) return;
+  if (!uomReady){
+    el.textContent = '适飞层 未就绪';
+    el.className = 'badge err';
+    return;
+  }
+  el.textContent = uomTileErrs
+    ? `适飞层 ${uomTiles} 块 / ${uomTileErrs} 失败`
+    : `适飞层 ${uomTiles} 块`;
+  el.className = 'badge ' + (uomTileErrs ? 'err' : (uomTiles > 0 ? 'ok' : ''));
+}
+function bumpUomTiles(ok){
+  if (ok) uomTiles++; else uomTileErrs++;
+  // 合并刷新，别让每次瓦片都触发一次 DOM 写入
+  if (uomStatTimer) return;
+  uomStatTimer = setTimeout(() => { uomStatTimer = null; updateLayerBadge(); }, 250);
+}
+
 const SUITABLE_RGBA = [41, 128, 185, 255];
 const NATIVE_MAX_Z = 13;
 
@@ -438,12 +495,18 @@ if (pm){
       ...TILE_OPTS                 // 与底图同一套动画参数，保证同步
     }).addTo(map);
     uomReady = true;
-    uomLayer.on('tileerror', e => console.warn('UOM 瓦片加载失败', e.coords));
+    uomLayer.on('tileload', () => bumpUomTiles(true));
+    uomLayer.on('tileerror', e => {
+      bumpUomTiles(false);
+      console.warn('UOM 瓦片加载失败', e && e.coords);
+    });
   } catch(e){
     uomError = e.message || String(e);
     console.error('UOM 图层创建失败', e);
+    showError('UOM 图层创建失败', uomError);
   }
 }
+updateLayerBadge();
 
 /* ---------------- 大疆禁飞/限飞区 ---------------- */
 const DJI_STYLE = {
@@ -723,9 +786,13 @@ document.getElementById('resClose').onclick = () =>
   document.getElementById('result').classList.remove('on');
 
 /* ---------------- 启动 ---------------- */
+document.getElementById('bdVer').textContent = BUILD;
 document.getElementById('bdUom').textContent = `适飞数据 ${UOM_DATA_DATE}`;
 document.getElementById('bdUom').classList.add('stale');
 document.getElementById('bdUom').title = '第三方归档数据，非实时';
+document.getElementById('bdVer').title = '构建版本，用于确认浏览器加载的是最新代码';
+
+if (uomError) showError('PMTiles 初始化失败', uomError + '\n（数据文件：data/uom-shifei.pmtiles）');
 
 if (CONFIG.tiandituKey){
   setBase('tdt_vec');
