@@ -10,10 +10,14 @@
 
 用法: python serve.py [端口]
 """
+import json
 import os
 import re
 import socket
 import sys
+import urllib.error
+import urllib.parse
+import urllib.request
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from socketserver import ThreadingMixIn
 
@@ -88,6 +92,9 @@ class RangeHandler(SimpleHTTPRequestHandler):
         self.end_headers()
 
     def _serve(self, head_only):
+        if self.path.split("?")[0] == "/diag/probe":
+            self._serve_basemap_probe()
+            return
         path = self.translate_path(self.path)
         if os.path.isdir(path):
             path = os.path.join(path, "index.html")
@@ -151,6 +158,65 @@ class RangeHandler(SimpleHTTPRequestHandler):
                 if not head_only:
                     f.seek(start)
                     self._pump(f, length)
+
+    # 允许代查的图源域名（避免变成任意 URL 代理）
+    PROBE_HOSTS = (
+        "tianditu.gov.cn", "autonavi.com", "map.gtimg.com",
+        "arcgisonline.com", "openstreetmap.de", "openstreetmap.fr",
+        "bdimg.com",
+    )
+
+    def _serve_basemap_probe(self):
+        """代查一条瓦片地址，回报真实状态码。
+
+        为什么需要：浏览器里 <img> 加载失败只能知道"失败了"，跨域图片读不到
+        状态码。而 418(WAF拦截) / 403(key被拒) / 429(配额用尽) / 200(正常)
+        的区别正是定位问题的关键。服务端发请求没有跨域限制。
+        只允许代查白名单内的图源域名。
+        """
+        from urllib.parse import parse_qs, urlparse
+        q = parse_qs(urlparse(self.path).query)
+        target = (q.get("u", [""])[0] or "").strip()
+        if not target.startswith("https://"):
+            self.send_error(400, "only https")
+            return
+        host = urlparse(target).hostname or ""
+        if not any(host == h or host.endswith("." + h) for h in self.PROBE_HOSTS):
+            self.send_error(403, "host not allowed")
+            return
+        out = {"url": target, "host": host}
+        try:
+            req = urllib.request.Request(target, headers={
+                "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                               "AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"),
+                "Referer": "http://127.0.0.1:8080/",
+            })
+            with urllib.request.urlopen(req, timeout=20) as r:
+                d = r.read()
+                out["status"] = r.status
+                out["contentType"] = r.headers.get("Content-Type", "")
+                out["bytes"] = len(d)
+                # PNG 魔数 89 50 4E 47 或 JPEG 魔数 FF D8
+                out["looksLikeImage"] = (d[:4] == bytes((0x89, 0x50, 0x4E, 0x47))) or (d[:2] == bytes((0xFF, 0xD8)))
+        except urllib.error.HTTPError as e:
+            body = b""
+            try:
+                body = e.read()
+            except Exception:
+                pass
+            out["status"] = e.code
+            out["contentType"] = e.headers.get("Content-Type", "") if e.headers else ""
+            out["bytes"] = len(body)
+            out["looksLikeImage"] = False
+        except Exception as e:
+            out["error"] = "%s: %s" % (type(e).__name__, e)
+        payload = json.dumps(out, ensure_ascii=False).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(payload)
 
     def _cache_headers(self, no_cache, st=None, size=None):
         if no_cache:

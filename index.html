@@ -355,7 +355,7 @@
    alpha 严格为 0 或 255，无抗锯齿中间值，因此判定无歧义。
    瓦片缺失 ⇒ 该区域无适飞空域。 */
 /* 构建标识：用来确认浏览器实际加载的是哪一版，排查缓存问题 */
-const BUILD = 'v16-batch';
+const BUILD = 'v16.1';
 
 /* 加载层兜底：放在脚本最前面注册。
    之前把它放在末尾，一旦中间某处抛错就永远不执行，页面会卡死在
@@ -787,11 +787,23 @@ function attachBaseRetry(layer, limit){
           '③ 网络拦截。<br>' +
           '按 F12 → Network 看那条瓦片请求的状态码可以区分。';
       }
-      showBaseWarn(msg);
+      showBaseWarn(msg + '<br><span style="color:#8a6417">正在代查真实状态码…</span>');
       report('BASE_TILE_ERR', { kind: document.getElementById('baseSel').value,
                                 keyId: keyId || null, hasKey: hasKey,
                                 origin: origin, count: errCount });
+      /* 让本地服务器代查一条失败瓦片的真实状态码。
+         浏览器里 <img> 失败拿不到状态码（跨域图片），而
+         418(WAF拦截)/403(key被拒)/429(配额)/200(正常) 正是定位问题的关键。
+         线上（无本地服务器）这一步会失败，不影响其它功能。 */
+      const badImg = (e && e.tile && e.tile.src) || '';
+      checkBaseStatus(badImg, function(extra){
+        showBaseWarn(msg + extra);
+      });
     }
+    /* 已经判定是"大面积失败"时就不要再重试了：
+       key 失效这类问题重试不会成功，反而把请求量翻几倍，
+       对本来就有配额的图源（天地图）是雪上加霜。 */
+    if (reported) return;
     const img = e && e.tile;
     if (!img || !img.src) return;
     const n = (img._uomRetry = (img._uomRetry || 0) + 1);
@@ -819,6 +831,37 @@ function showBaseWarn(html){
 function hideBaseWarn(){
   const warn = document.getElementById('tdtWarn');
   if (warn) warn.classList.remove('on');
+}
+
+/* 调本地服务器代查一条瓦片地址的真实状态码，并把结论转成人话。
+   本地服务器不在（例如 GitHub Pages）时静默跳过。 */
+function checkBaseStatus(url, done){
+  if (!url || url.indexOf('data:') === 0){ done(''); return; }
+  fetch('diag/probe?u=' + encodeURIComponent(url), { cache: 'no-store' })
+    .then(r => r.ok ? r.json() : null)
+    .then(j => {
+      if (!j || j.error){ done(''); return; }
+      const code = j.status;
+      let verdict;
+      if (code === 418) {
+        verdict = '被 <b>WAF 拦截</b>（418）。天地图对无效/过期/超额度的 key ' +
+                  '都返回这个码，所以基本可判定该 key 当前不可用。';
+      } else if (code === 403 || code === 401) {
+        verdict = '<b>key 被拒绝</b>（' + code + '）。多为 key 停用或限定域名不符。';
+      } else if (code === 429) {
+        verdict = '<b>配额用尽</b>（429）。换代 key 或等次日重置。';
+      } else if (code === 200 && j.looksLikeImage) {
+        verdict = '服务端代查返回 <b>200 且是正常图片</b> —— 说明 key 本身可用，' +
+                  '问题在浏览器侧（域名白名单 referrer、代理、或本机网络）。';
+      } else {
+        verdict = '状态码 ' + code + '（' + (j.contentType || '未知类型') + '）。';
+      }
+      report('BASE_PROBE', { status: code, ct: j.contentType,
+                             bytes: j.bytes, image: j.looksLikeImage });
+      done('<br><br><b>代查结果</b>：状态码 ' + code +
+           '（' + (j.bytes || 0) + ' 字节，' + (j.contentType || '-') + '）<br>' + verdict);
+    })
+    .catch(() => done(''));
 }
 
 let baseLayer = null;
