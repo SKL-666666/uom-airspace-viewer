@@ -285,7 +285,7 @@
    alpha 严格为 0 或 255，无抗锯齿中间值，因此判定无歧义。
    瓦片缺失 ⇒ 该区域无适飞空域。 */
 /* 构建标识：用来确认浏览器实际加载的是哪一版，排查缓存问题 */
-const BUILD = 'v7';
+const BUILD = 'v8';
 
 /* 诊断上报：把浏览器里的真实状态回传到本地服务器，落盘成 diag.log。
    排查时截图里的文字读不出来，直接回传文本最省事。 */
@@ -399,6 +399,10 @@ const map = L.map('map', {
   tap: false,                 // 移动端避免点图时触发缩放
   touchZoom: true,
   zoomAnimation: true,
+  /* 关闭瓦片淡入。淡入是 Map 级选项（不是图层选项，写错会被静默忽略）：
+     每块瓦片一个 opacity 过渡，一屏几百块同时过渡带来大量合成开销，
+     关掉后瓦片直接显示，明显更跟手。 */
+  fadeAnimation: false,
   zoomAnimationThreshold: 4,  // 跨 4 级以上直接跳转，不做动画（跨省定位更快）
   preferCanvas: true,         // 矢量图层统一走 canvas，省掉 SVG DOM 开销
   markerZoomAnimation: false,
@@ -415,10 +419,29 @@ const map = L.map('map', {
 map.createPane('basePane').style.zIndex = 200;
 map.createPane('uomPane').style.zIndex = 300;
 
+/* 底图失败重试兜底。
+   天地图对免费 key 有 QPS 限流，拖动时瞬时失败很常见；而 Leaflet
+   自身不会重试，失败瓦片会一直空着（表现就是"大片空白"）。
+   这里做有限次数的整体重绘兜底，次数封顶避免放大限流。 */
+let baseRetryCount = 0;
+function attachBaseRetry(layer, limit){
+  const guard = (e) => {
+    if (baseLayer !== layer) return;         // 已切换底图，忽略
+    if (baseRetryCount >= limit) return;
+    baseRetryCount++;
+    setTimeout(() => {
+      if (baseLayer === layer) layer.redraw();
+    }, 900 * baseRetryCount);
+  };
+  if (typeof layer.eachLayer === 'function') layer.eachLayer(l => l.on('tileerror', guard));
+  else layer.on('tileerror', guard);
+}
+
 let baseLayer = null;
 
 function setBase(kind){
   if (baseLayer){ map.removeLayer(baseLayer); baseLayer = null; }
+  baseRetryCount = 0;                       // 换底图后重试额度重置
   document.getElementById('tdtWarn').classList.toggle('on', kind.startsWith('tdt'));
   document.getElementById('amapWarn').classList.toggle('on', kind.startsWith('amap'));
   if (kind === 'none') return;
@@ -433,6 +456,7 @@ function setBase(kind){
     if (typeof baseLayer.eachLayer === 'function'){
       baseLayer.eachLayer(l => { l.options.pane = 'basePane'; });
     }
+    attachBaseRetry(baseLayer, kind.startsWith('tdt') ? 3 : 1);
     baseLayer.addTo(map);
   }
 }
@@ -453,48 +477,70 @@ try {
 }
 
 /* 瓦片缓存：显示层与「点击判定」共用同一份数据，同一瓦片不会取两次。
-   用 Map 的插入顺序当 LRU。 */
+   用 Map 的插入顺序当 LRU。
+   entry 结构：{ data: ArrayBuffer, url?: string, pixels?: Uint8ClampedArray } */
 const tileStore = new Map();
-const TILE_STORE_MAX = 800;
+const TILE_STORE_MAX = 600;
+const tileInflight = new Map();   // key -> Promise，用于合并同一瓦片的并发请求
+
+function evictTile(key){
+  const e = tileStore.get(key);
+  if (e && e.url) URL.revokeObjectURL(e.url);   // 淘汰时才释放 blob
+  tileStore.delete(key);
+}
 
 async function getTileEntry(z, x, y){
   if (!pm) return null;
   const key = z + '/' + x + '/' + y;
+
   if (tileStore.has(key)){
     const v = tileStore.get(key);
     tileStore.delete(key); tileStore.set(key, v);   // 触碰，挪到队尾
     return v;
   }
-  let entry = null;
-  try {
-    const res = await pm.getZxy(z, x, y);
-    if (res && res.data && res.data.byteLength) entry = { data: res.data, pixels: null };
-  } catch(e){ entry = null; }
-  tileStore.set(key, entry);
-  if (tileStore.size > TILE_STORE_MAX) {
-    tileStore.delete(tileStore.keys().next().value);
-  }
-  return entry;
+  /* 快速拖动/缩放时同一瓦片会被连续请求多次，这里合并成一个 Promise，
+     否则会对同一瓦片发起重复的 PMTiles 目录查询。 */
+  if (tileInflight.has(key)) return tileInflight.get(key);
+
+  const p = (async () => {
+    let entry = null;
+    try {
+      const res = await pm.getZxy(z, x, y);
+      if (res && res.data && res.data.byteLength) entry = { data: res.data };
+    } catch(e){ entry = null; }
+    tileStore.set(key, entry);            // 找不到也缓存 null，避免反复查
+    while (tileStore.size > TILE_STORE_MAX) {
+      evictTile(tileStore.keys().next().value);
+    }
+    tileInflight.delete(key);
+    return entry;
+  })();
+
+  tileInflight.set(key, p);
+  return p;
 }
 
-/* 自建瓦片层，替代库自带的 leafletRasterLayer，原因有二：
+/* 自建瓦片层，替代库自带的 leafletRasterLayer，原因有三：
    1) 复用 tileStore —— 显示与判定不重复取数
-   2) 图片加载后立即 revokeObjectURL —— 库自带版本从不释放，
-      长时间浏览会持续堆积 blob，触发 GC 卡顿 */
+   2) objectURL 按瓦片缓存复用 —— 库自带版本每渲染一次就新建一个 blob，
+      来回拖动时会疯狂创建/丢弃，这里只在 LRU 淘汰时释放
+   3) 合并并发请求 */
 const UomLayer = L.GridLayer.extend({
   createTile(coords, done){
     const img = document.createElement('img');
     img.alt = '';
-    img.className = 'uom-tile';
     /* 设了 maxNativeZoom=13 后，Leaflet 在放大超过 13 级时会把
        coords.z 钳到 13 并拉伸显示，这里直接用 coords 即可 */
     getTileEntry(coords.z, coords.x, coords.y).then(entry => {
       if (!entry){ done(null, img); return; }   // 该处无适飞数据，留空
-      const url = URL.createObjectURL(new Blob([entry.data], { type:'image/png' }));
-      const release = () => URL.revokeObjectURL(url);
-      img.onload = () => { release(); done(null, img); };
-      img.onerror = () => { release(); bumpUomTiles(false); done(null, img); };
-      img.src = url;
+      /* objectURL 存在 entry 上复用；图片一旦 load 完成，浏览器已持有
+         解码数据，URL 被淘汰释放也不会影响已显示的图片。 */
+      if (!entry.url){
+        entry.url = URL.createObjectURL(new Blob([entry.data], { type:'image/png' }));
+      }
+      img.onload  = () => done(null, img);
+      img.onerror = () => { bumpUomTiles(false); done(null, img); };
+      img.src = entry.url;
     }).catch(err => {
       /* 关键：这里绝不能静默吞掉。之前写成 .catch(()=>done(null,img))
          导致取数失败时既不计数也不报错，页面上完全看不出问题。
@@ -518,7 +564,11 @@ if (pm){
       maxNativeZoom: NATIVE_MAX_Z, // 原生最大 13 级
       maxZoom: 18,                 // 13 级以上由 Leaflet 放大父瓦片
       opacity: 0.65,
-      keepBuffer: 3,               // 本地数据，多留几圈
+      /* keepBuffer 从 3 降到 1。
+         视口 1911x1053 在 zoom 5 实际可见约 40 块瓦片，keepBuffer:3
+         会把预取范围扩到 265 块（6 倍），每块都要走一次 PMTiles 目录
+         查询。本地虽快，但并发上千次请求仍然拖慢整体交互。 */
+      keepBuffer: 1,
       ...TILE_OPTS                 // 与底图同一套动画参数，保证同步
     }).addTo(map);
     uomReady = true;
@@ -527,6 +577,14 @@ if (pm){
       bumpUomTiles(false);
       console.warn('UOM 瓦片加载失败', e && e.coords);
     });
+    /* 数据只覆盖中国及周边（约 73~135.5E, 17.5~54N）。
+       设上 bounds 后，视野移出该范围时 Leaflet 不再请求瓦片，
+       省掉大量注定查不到的目录遍历。 */
+    pm.getHeader().then(h => {
+      uomLayer.options.bounds = L.latLngBounds(
+        [h.minLat, h.minLon], [h.maxLat, h.maxLon]);
+      uomLayer.redraw();
+    }).catch(() => {});
   } catch(e){
     uomError = e.message || String(e);
     console.error('UOM 图层创建失败', e);
@@ -547,37 +605,71 @@ const DJI_LABEL = {
 };
 let djiLayer = null, djiData = null;
 
-/* 粗筛：只保留中国及周边的要素，避免 4112 个多边形全部渲染 */
+/* 直接从坐标数组算包围盒。
+   原实现是 L.geoJSON(f).getBounds()，对 4112 个要素各建一个图层对象
+   只为读一下 bounds，启动时要凭空创建 4112 个 Path，纯属浪费。 */
+function featureBBox(f){
+  let s = 90, n = -90, w = 180, e = -180;
+  const walk = (a) => {
+    if (typeof a[0] === 'number'){          // [lon, lat]
+      const x = a[0], y = a[1];
+      if (y < s) s = y;
+      if (y > n) n = y;
+      if (x < w) w = x;
+      if (x > e) e = x;
+    } else {
+      for (let i = 0; i < a.length; i++) walk(a[i]);
+    }
+  };
+  if (f.geometry && f.geometry.coordinates) walk(f.geometry.coordinates);
+  return { s, n, w, e };
+}
 function inChinaBBox(f){
-  const b = L.geoJSON(f).getBounds();
-  return b.getSouth() < 55 && b.getNorth() > 15 && b.getWest() < 136 && b.getEast() > 72;
+  const b = featureBBox(f);
+  return b.s < 55 && b.n > 15 && b.w < 136 && b.e > 72;
 }
 
-fetch('data/dji_flysafe.geojson')
-  .then(r => r.json())
-  .then(gj => {
-    const feats = gj.features.filter(inChinaBBox);
-    djiData = { type:'FeatureCollection', features: feats };
-    djiLayer = L.geoJSON(djiData, {
-      renderer: L.canvas({ padding: .5 }),
-      style: f => DJI_STYLE[f.properties.type] || DJI_STYLE.warning,
-      onEachFeature: (f, l) => {
-        const p = f.properties;
-        l.bindPopup(
-          `<b>${DJI_LABEL[p.type] || p.type}</b><br>` +
-          `${p.name || '（无名）'}<br>` +
-          `<span style="color:#888;font-size:11px">` +
-          `${p.zone_type || ''}${p.height ? ' · 限高 ' + p.height + 'm' : ''}</span>`
-        );
-      }
-    }).addTo(map);
-    document.getElementById('djiN').textContent = feats.length + ' 个';
-    document.getElementById('bdDji').textContent = `大疆数据 ${DJI_DATA_DATE}`;
-  })
-  .catch(e => {
-    console.error('大疆数据加载失败', e);
-    document.getElementById('bdDji').textContent = '大疆数据 加载失败';
-  });
+/* 大疆数据延迟加载：5MB GeoJSON 解析 + 上千个多边形构建会阻塞首屏。
+   先让地图和 UOM 图层出来，空闲时再叠大疆。 */
+function loadDji(){
+  const t0 = performance.now();
+  fetch('data/dji_flysafe.geojson')
+    .then(r => r.json())
+    .then(gj => {
+      const feats = gj.features.filter(inChinaBBox);
+      djiData = { type:'FeatureCollection', features: feats };
+      djiLayer = L.geoJSON(djiData, {
+        /* tolerance:0 让 canvas 命中测试不做额外容差，加快交互 */
+        renderer: L.canvas({ padding: 0.5, tolerance: 0 }),
+        /* 几何抽稀：多边形顶点很多，smoothFactor 高一些能显著减少
+           每次重绘要投影的点数。数值越大越省性能、形状越粗。 */
+        smoothFactor: 2.5,
+        style: f => Object.assign(
+          { smoothFactor: 2.5 }, DJI_STYLE[f.properties.type] || DJI_STYLE.warning),
+        onEachFeature: (f, l) => {
+          const p = f.properties;
+          l.bindPopup(
+            `<b>${DJI_LABEL[p.type] || p.type}</b><br>` +
+            `${p.name || '（无名）'}<br>` +
+            `<span style="color:#888;font-size:11px">` +
+            `${p.zone_type || ''}${p.height ? ' · 限高 ' + p.height + 'm' : ''}</span>`
+          );
+        }
+      });
+      if (document.getElementById('lyDji').checked) djiLayer.addTo(map);
+      document.getElementById('djiN').textContent = feats.length + ' 个';
+      document.getElementById('bdDji').textContent = `大疆数据 ${DJI_DATA_DATE}`;
+      report('DJI_LOADED', { features: feats.length,
+                             ms: Math.round(performance.now() - t0) });
+    })
+    .catch(e => {
+      console.error('大疆数据加载失败', e);
+      document.getElementById('bdDji').textContent = '大疆数据 加载失败';
+      report('DJI_LOAD_FAIL', (e && e.message) || String(e));
+    });
+}
+if (window.requestIdleCallback) requestIdleCallback(loadDji, { timeout: 4000 });
+else setTimeout(loadDji, 1500);
 
 /* ---------------- ZB(SR)801 自定义管制区 ---------------- */
 let zoneLayer = null, zoneData = null;
@@ -897,6 +989,30 @@ setTimeout(async () => {
 
   report('STARTUP', info);
 }, 5000);
+
+/* 帧率采样：客观衡量流畅度，而不是靠感觉。
+   每 10 秒上报一次平均帧率与最长单帧耗时（>50ms 即为明显掉帧）。 */
+(function fpsProbe(){
+  let frames = 0, t0 = performance.now(), worst = 0, last = t0;
+  const tick = (now) => {
+    const dt = now - last;
+    last = now;
+    if (dt > worst) worst = dt;
+    frames++;
+    if (now - t0 >= 10000){
+      const secs = (now - t0) / 1000;
+      report('FPS', {
+        avg: +(frames / secs).toFixed(1),
+        worstFrameMs: Math.round(worst),
+        frames: frames,
+        zoom: map.getZoom()
+      });
+      frames = 0; t0 = now; worst = 0;
+    }
+    requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+})();
 
 if (CONFIG.tiandituKey){
   setBase('tdt_vec');
