@@ -15,11 +15,17 @@
   *{box-sizing:border-box}
   /* html/body/#map 全部钉死深色：瓦片没加载出来时露出的也是深色而非白色。
      Leaflet 自带 .leaflet-container{background:#ddd}，用 #map 的 id 选择器压过去。 */
+  /* 地图容器底色用中性浅灰，与底图瓦片同色系。
+     用深色（我之前的写法）会让瓦片之间因分数像素定位产生的 1px 缝隙
+     露出暗线，浅色瓦片 + 暗线 = 明显的「栅栏」感。
+     面板与页面外围仍是深色，只是地图画布这一层用浅色。 */
   html{background:#0d1117}
   html,body{margin:0;height:100%;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;background:#0d1117;color:var(--tx);overscroll-behavior:none}
-  #map{position:absolute;inset:0;background:#0d1117}
-  .leaflet-container{background:#0d1117}
+  #map{position:absolute;inset:0;background:#e5e3df}
+  .leaflet-container{background:#e5e3df}
   .leaflet-pane,.leaflet-tile-pane{background:transparent}
+  /* 让瓦片互相轻微重叠，掩盖分数像素定位造成的缝隙 */
+  .leaflet-tile{outline:1px solid transparent}
 
   /* ---------- 面板 ---------- */
   .panel{position:absolute;z-index:1000;background:rgba(27,33,41,.94);backdrop-filter:blur(10px);
@@ -285,7 +291,7 @@
    alpha 严格为 0 或 255，无抗锯齿中间值，因此判定无歧义。
    瓦片缺失 ⇒ 该区域无适飞空域。 */
 /* 构建标识：用来确认浏览器实际加载的是哪一版，排查缓存问题 */
-const BUILD = 'v9';
+const BUILD = 'v10';
 
 /* 诊断上报：把浏览器里的真实状态回传到本地服务器，落盘成 diag.log。
    排查时截图里的文字读不出来，直接回传文本最省事。 */
@@ -627,6 +633,27 @@ function inChinaBBox(f){
   return b.s < 55 && b.n > 15 && b.w < 136 && b.e > 72;
 }
 
+/* 大疆图层随缩放显隐。
+   低缩放下这些多边形大多只有 1~3 像素，肉眼几乎看不见，但 Leaflet 的
+   canvas 每次重绘仍要投影它们的全部顶点（上千个多边形、数万个点），
+   白白占满主线程。放大到 8 级再显示，既省性能也更清晰。 */
+const DJI_MIN_ZOOM = 8;
+function syncDjiVisibility(){
+  const row = document.getElementById('djiN');
+  if (!djiLayer){ if (row) row.textContent = '加载中'; return; }
+  const on = document.getElementById('lyDji').checked;
+  const z = map.getZoom();
+  const want = on && z >= DJI_MIN_ZOOM;
+  if (want && !map.hasLayer(djiLayer)) djiLayer.addTo(map);
+  else if (!want && map.hasLayer(djiLayer)) map.removeLayer(djiLayer);
+  if (row) {
+    const n = djiData ? djiData.features.length : 0;
+    row.textContent = !on ? '已关闭'
+      : (z < DJI_MIN_ZOOM ? `放大至 ${DJI_MIN_ZOOM} 级显示` : n + ' 个');
+  }
+}
+map.on('zoomend', syncDjiVisibility);
+
 /* 大疆数据延迟加载：5MB GeoJSON 解析 + 上千个多边形构建会阻塞首屏。
    先让地图和 UOM 图层出来，空闲时再叠大疆。 */
 function loadDji(){
@@ -655,10 +682,10 @@ function loadDji(){
         }
       });
       if (document.getElementById('lyDji').checked) djiLayer.addTo(map);
-      document.getElementById('djiN').textContent = feats.length + ' 个';
       document.getElementById('bdDji').textContent = `大疆数据 ${DJI_DATA_DATE}`;
       report('DJI_LOADED', { features: feats.length,
                              ms: Math.round(performance.now() - t0) });
+      syncDjiVisibility();
     })
     .catch(e => {
       console.error('大疆数据加载失败', e);
@@ -870,10 +897,7 @@ document.getElementById('lyUom').onchange = e => {
 document.getElementById('uomOp').oninput = e => {
   if (uomLayer) uomLayer.setOpacity(e.target.value / 100);
 };
-document.getElementById('lyDji').onchange = e => {
-  if (!djiLayer) return;
-  e.target.checked ? map.addLayer(djiLayer) : map.removeLayer(djiLayer);
-};
+document.getElementById('lyDji').onchange = () => syncDjiVisibility();
 document.getElementById('lyZn').onchange = e => {
   if (!zoneLayer) return;
   e.target.checked ? map.addLayer(zoneLayer) : map.removeLayer(zoneLayer);
@@ -981,12 +1005,59 @@ setTimeout(async () => {
     };
     // 真正加载完成的图片数
     info.uomImgComplete = [...imgs].filter(el => el.complete && el.naturalWidth > 0).length;
+
+    /* 背景色探针。
+       "没加载出来时一片白 / 白色栅栏" 这类问题，只有读计算样式才能确定
+       CSS 到底有没有生效、生效成了什么值。 */
+    const mapEl = document.getElementById('map');
+    const mcs = getComputedStyle(mapEl);
+    info.mapStyle = {
+      bg: mcs.backgroundColor,
+      cls: mapEl.className,
+      size: [mapEl.clientWidth, mapEl.clientHeight]
+    };
+    info.bodyBg = getComputedStyle(document.body).backgroundColor;
+    info.htmlBg = getComputedStyle(document.documentElement).backgroundColor;
+    // leaflet.css 是否真的加载并生效
+    const probe = document.createElement('div');
+    probe.className = 'leaflet-container';
+    probe.style.cssText = 'position:absolute;visibility:hidden';
+    document.body.appendChild(probe);
+    info.leafletCssBg = getComputedStyle(probe).backgroundColor;
+    document.body.removeChild(probe);
+    // 底图瓦片样本（白色栅栏是否来自底图）
+    const bpane = map.getPane('basePane');
+    if (bpane){
+      const bimg = bpane.querySelectorAll('img');
+      info.baseImgSample = [...bimg].slice(0, 2).map(el => ({
+        natural: el.naturalWidth + 'x' + el.naturalHeight,
+        complete: el.complete, w: el.width, h: el.height,
+        src: (el.src || '').slice(0, 40)
+      }));
+    }
   } catch(e) {
     info.domProbeError = (e && e.message) || String(e);
   }
 
   report('STARTUP', info);
 }, 5000);
+
+/* 长任务监测：直接抓出阻塞主线程的东西（>80ms 即为可感知卡顿）。
+   这比任何猜测都准 —— 卡顿必然表现为长任务。 */
+if (window.PerformanceObserver){
+  try {
+    let n = 0;
+    new PerformanceObserver(list => {
+      for (const e of list.getEntries()){
+        if (e.duration > 80 && n < 25){
+          n++;
+          report('LONGTASK', { ms: Math.round(e.duration), name: e.name,
+                               start: Math.round(e.startTime) });
+        }
+      }
+    }).observe({ entryTypes: ['longtask'] });
+  } catch(e){ /* 浏览器不支持就算了 */ }
+}
 
 /* 帧率采样：客观衡量流畅度，而不是靠感觉。
    每 10 秒上报一次平均帧率与最长单帧耗时（>50ms 即为明显掉帧）。 */
