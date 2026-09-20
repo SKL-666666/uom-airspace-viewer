@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# 运行产物
+serve.log
+*.log
+
+# 临时校验文件
+_check.js
+preview_z*.png
+test_*.bin
+
+# 本地开发笔记（含平台逆向过程，不公开）
+复刻指南.md
+
+# 系统
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
