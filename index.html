@@ -68,6 +68,14 @@
                   animation:sl 1.1s ease-in-out infinite}
   @keyframes sl{0%{transform:translateX(-100%)}100%{transform:translateX(330%)}}
   .leaflet-container{background:#0d1117}
+
+  /* 缩放/拖动时的渲染优化。
+     Leaflet 的缩放动画是对 .leaflet-map-pane 整体做 CSS transform，
+     所有图层共用这一个变换 —— 所以只要动画期间不插新瓦片请求，
+     两层就严格同步。will-change 让它走 GPU 合成。 */
+  .leaflet-map-pane{will-change:transform;backface-visibility:hidden}
+  /* 放大超过原生 13 级后瓦片会被拉伸，保持平滑插值而非硬像素块 */
+  .uom-tile{will-change:transform;backface-visibility:hidden}
   @media(max-width:720px){
     #side{width:calc(100% - 24px);max-height:44%}
     #result{width:calc(100% - 24px);top:auto;bottom:12px;max-height:48%}
@@ -192,6 +200,18 @@ const CONFIG = {
 };
 
 /* ---------------- 底图 ---------------- */
+/* 瓦片层动画参数（底图与 UOM 层必须一致，否则缩放不同步）。
+   updateWhenZooming:false 是关键 —— 缩放动画期间不发新瓦片请求，
+   整个缩放由 Leaflet 对 .leaflet-map-pane 的一次 CSS transform 完成，
+   所有图层共用这一个变换，因此严格同步且不掉帧。
+   keepBuffer 只影响视口外预留几圈瓦片，不影响同步，故两者可不同：
+   底图走网络，少留；UOM 是本地数据，多留换取流畅。 */
+const TILE_OPTS = {
+  updateWhenIdle: false,      // 拖动过程中即时加载
+  updateWhenZooming: false,   // 动画期间不动瓦片（性能 + 同步的关键）
+  tileSize: 256
+};
+
 function tdtLayer(type){
   const k = CONFIG.tiandituKey;
   const sub = '01234567';
@@ -199,7 +219,8 @@ function tdtLayer(type){
     `https://t{s}.tianditu.gov.cn/${layer}_w/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0` +
     `&LAYER=${layer}&STYLE=default&TILEMATRIXSET=w&FORMAT=tiles` +
     `&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}&tk=${k}`,
-    { subdomains: sub, maxZoom: 18, attribution: '&copy; 天地图' });
+    { ...TILE_OPTS, keepBuffer: 1, subdomains: sub, maxZoom: 18,
+              attribution: '&copy; 天地图' });
 
   return type === 'img'
     ? L.layerGroup([mk('img'), mk('cia')])
@@ -209,7 +230,8 @@ function amapLayer(type){
   const url = type === 'sat'
     ? 'https://webst0{s}.is.autonavi.com/appmaptile?style=6&x={x}&y={y}&z={z}'
     : 'https://webrd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}';
-  return L.tileLayer(url, { subdomains: '1234', maxZoom: 18, attribution: '&copy; 高德地图' });
+  return L.tileLayer(url, { ...TILE_OPTS, keepBuffer: 1, subdomains: '1234',
+                            maxZoom: 18, attribution: '&copy; 高德地图' });
 }
 
 /* ---------------- 地图初始化 ---------------- */
@@ -221,6 +243,9 @@ const map = L.map('map', {
   wheelPxPerZoomLevel: 130,
   wheelDebounceTime: 40,
   zoomAnimation: true,
+  zoomAnimationThreshold: 4,  // 跨 4 级以上直接跳转，不做动画（跨省定位更快）
+  preferCanvas: true,         // 矢量图层统一走 canvas，省掉 SVG DOM 开销
+  markerZoomAnimation: false,
   inertia: true,
   maxZoom: 18,
   minZoom: 3,
@@ -235,7 +260,6 @@ map.createPane('basePane').style.zIndex = 200;
 map.createPane('uomPane').style.zIndex = 300;
 
 let baseLayer = null;
-const gridOpts = { updateWhenIdle:false, updateWhenZooming:true, keepBuffer:1, tileSize:256 };
 
 function setBase(kind){
   if (baseLayer){ map.removeLayer(baseLayer); baseLayer = null; }
@@ -257,21 +281,81 @@ let pm = null, uomLayer = null;
 let uomReady = false;
 let uomError = '';
 
+/* pmtiles 默认缓存只有 100 条；一屏就要 20–40 个瓦片，加上目录项很快被
+   挤爆并反复发 Range 请求，这是缩放卡顿的主因。放大到 1000 条。 */
 try {
-  pm = new pmtiles.PMTiles('data/uom-shifei.pmtiles');
-  uomLayer = pmtiles.leafletRasterLayer(pm, {
-    pane: 'uomPane',        // 必须在底图之上，否则被底图盖住
-    minZoom: 0,
-    maxNativeZoom: NATIVE_MAX_Z,   // 原生最大 13 级
-    maxZoom: 18,                   // 13 级以上 Leaflet 自动放大父瓦片（超采样）
-    tileSize: 256,
-    opacity: 0.65
-  }).addTo(map);
-  uomReady = true;
-  uomLayer.on('tileerror', e => console.warn('UOM 瓦片加载失败', e.coords));
+  pm = new pmtiles.PMTiles('data/uom-shifei.pmtiles',
+                           new pmtiles.SharedPromiseCache(1000));
 } catch(e){
   uomError = e.message || String(e);
   console.error('PMTiles 初始化失败', e);
+}
+
+/* 瓦片缓存：显示层与「点击判定」共用同一份数据，同一瓦片不会取两次。
+   用 Map 的插入顺序当 LRU。 */
+const tileStore = new Map();
+const TILE_STORE_MAX = 800;
+
+async function getTileEntry(z, x, y){
+  if (!pm) return null;
+  const key = z + '/' + x + '/' + y;
+  if (tileStore.has(key)){
+    const v = tileStore.get(key);
+    tileStore.delete(key); tileStore.set(key, v);   // 触碰，挪到队尾
+    return v;
+  }
+  let entry = null;
+  try {
+    const res = await pm.getZxy(z, x, y);
+    if (res && res.data && res.data.byteLength) entry = { data: res.data, pixels: null };
+  } catch(e){ entry = null; }
+  tileStore.set(key, entry);
+  if (tileStore.size > TILE_STORE_MAX) {
+    tileStore.delete(tileStore.keys().next().value);
+  }
+  return entry;
+}
+
+/* 自建瓦片层，替代库自带的 leafletRasterLayer，原因有二：
+   1) 复用 tileStore —— 显示与判定不重复取数
+   2) 图片加载后立即 revokeObjectURL —— 库自带版本从不释放，
+      长时间浏览会持续堆积 blob，触发 GC 卡顿 */
+const UomLayer = L.GridLayer.extend({
+  createTile(coords, done){
+    const img = document.createElement('img');
+    img.alt = '';
+    img.className = 'uom-tile';
+    /* 设了 maxNativeZoom=13 后，Leaflet 在放大超过 13 级时会把
+       coords.z 钳到 13 并拉伸显示，这里直接用 coords 即可 */
+    getTileEntry(coords.z, coords.x, coords.y).then(entry => {
+      if (!entry){ done(null, img); return; }   // 该处无适飞数据，留空
+      const url = URL.createObjectURL(new Blob([entry.data], { type:'image/png' }));
+      const release = () => URL.revokeObjectURL(url);
+      img.onload = () => { release(); done(null, img); };
+      img.onerror = () => { release(); done(null, img); };
+      img.src = url;
+    }).catch(() => done(null, img));
+    return img;
+  }
+});
+
+if (pm){
+  try {
+    uomLayer = new UomLayer({
+      pane: 'uomPane',             // 必须在底图之上，否则被底图盖住
+      minZoom: 0,
+      maxNativeZoom: NATIVE_MAX_Z, // 原生最大 13 级
+      maxZoom: 18,                 // 13 级以上由 Leaflet 放大父瓦片
+      opacity: 0.65,
+      keepBuffer: 3,               // 本地数据，多留几圈
+      ...TILE_OPTS                 // 与底图同一套动画参数，保证同步
+    }).addTo(map);
+    uomReady = true;
+    uomLayer.on('tileerror', e => console.warn('UOM 瓦片加载失败', e.coords));
+  } catch(e){
+    uomError = e.message || String(e);
+    console.error('UOM 图层创建失败', e);
+  }
 }
 
 /* ---------------- 大疆禁飞/限飞区 ---------------- */
@@ -366,29 +450,24 @@ function pointInFeature(pt, geom){
 }
 
 /* ---------------- 读取 UOM 瓦片像素 ---------------- */
-const tileCache = new Map();   // "z/x/y" -> Uint8ClampedArray(256*256*4) | null
+/* 与显示层共用 tileStore：同一瓦片只取一次，解码结果缓存在 entry.pixels */
 const canvas = document.createElement('canvas');
 canvas.width = canvas.height = 256;
 const cctx = canvas.getContext('2d', { willReadFrequently:true });
 
 async function getTilePixels(z, x, y){
-  const key = `${z}/${x}/${y}`;
-  if (tileCache.has(key)) return tileCache.get(key);
-  let out = null;
+  const entry = await getTileEntry(z, x, y);
+  if (!entry) return null;
+  if (entry.pixels) return entry.pixels;
   try {
-    const res = await pm.getZxy(z, x, y);
-    if (res && res.data && res.data.byteLength){
-      const blob = new Blob([res.data], { type:'image/png' });
-      const bmp = await createImageBitmap(blob);
-      cctx.clearRect(0, 0, 256, 256);
-      cctx.drawImage(bmp, 0, 0);
-      out = cctx.getImageData(0, 0, 256, 256).data;
-      bmp.close();
-    }
-  } catch(e){ out = null; }
-  if (tileCache.size > 400) tileCache.clear();
-  tileCache.set(key, out);
-  return out;
+    const blob = new Blob([entry.data], { type:'image/png' });
+    const bmp = await createImageBitmap(blob);
+    cctx.clearRect(0, 0, 256, 256);
+    cctx.drawImage(bmp, 0, 0);
+    entry.pixels = cctx.getImageData(0, 0, 256, 256).data;
+    bmp.close();
+  } catch(e){ entry.pixels = null; }
+  return entry.pixels;
 }
 
 /* 经纬度 → z13 瓦片坐标 + 瓦片内像素 */
