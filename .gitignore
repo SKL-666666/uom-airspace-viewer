@@ -29,3 +29,29 @@ desktop.ini
 
 # 诊断上报日志
 diag.log
+
+# 打包产物（体积大，走 GitHub Release 分发，不入库）
+dist/
+build/
+release/
+*.exe
+*.hap
+*.apk
+*.jks
+_pyi.log
+
+# HarmonyOS 构建中间产物
+harmony/**/build/
+harmony/**/.hvigor/
+harmony/**/oh_modules/
+harmony/local.properties
+harmony/.clangd
+harmony/.clang-format
+harmony/.clang-tidy
+
+# Android 构建中间产物
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/gradle/wrapper/gradle-wrapper.jar

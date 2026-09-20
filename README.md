@@ -1,18 +1,37 @@
 # UOM 适飞空域查询
 
-本地运行的无人机空域查询网页。点击地图任意位置，判定该点是否在适飞空域内，
-并叠加显示大疆禁飞/限飞区。
+一个查中国无人机适飞空域的离线工具。点地图任意位置，判定该点是否在适飞空域内，
+同时叠加显示大疆禁飞/限飞区与首都禁飞区标注。
+
+**在线版（打开即用）**：<https://skl-666666.github.io/uom-airspace-viewer/>
 
 ---
 
-## 在线版（GitHub Pages）
+## 它解决什么问题
 
-**https://skl-666666.github.io/uom-airspace-viewer/**
+飞无人机前需要确认一块地方能不能飞。官方渠道是 UOM 平台，但要登录、
+交互也不方便随时查。这个工具把数据取到本地，点一下就出结果：
 
-不需要装 Python、不需要跑本地服务，打开就能用。
+- **该点是否在适飞空域内** —— 直接读官方栅格数据的像素判定
+- **是否命中大疆禁飞/限飞区** —— 叠加 1499 个空域多边形
+- **是否在首都禁飞区（ZB(SR)801）范围内** —— 用户自行标注的 300km 圆
 
-之所以能纯静态部署，是因为 **GitHub Pages 支持 HTTP Range 请求**——这是
-PMTiles 按需读取字节的前提。已实测确认：
+---
+
+## 三种使用方式
+
+| 方式 | 适用 | 需要什么 |
+|------|------|---------|
+| **在线版** | 随手查 | 只要能上网 |
+| **Windows exe** | 常用、要离线 | 双击即可，无需 Python |
+| **本地服务** | 要完整诊断能力 | Python 3.x |
+
+### 在线版
+
+<https://skl-666666.github.io/uom-airspace-viewer/>
+
+之所以能纯静态部署，是因为 **GitHub Pages 支持 HTTP Range 请求** ——
+而 PMTiles 正是靠 Range 按需读取字节。已实测确认：
 
 ```
 HTTP/1.1 206 Partial Content
@@ -20,50 +39,24 @@ Accept-Ranges: bytes
 Content-Range: bytes 0-126/89540467
 ```
 
-并按真实访问序列端到端验证过（头部 → 根目录 → 叶目录 → 单张瓦片，
-每步内容与本地文件逐字节一致）。
+### Windows exe
 
-**在线版的限制**
+到 [Releases](../../releases) 下载 `UOM-Viewer-Windows-x64.exe`，双击运行。
 
-- 诊断上报（`POST /__diag` → `diag.log`）只在本地服务器上存在。
-  线上出错不会写进日志，排查性能问题需要在本地跑。
-- 数据仍是仓库里的静态快照，不会自动更新。
+单文件 45MB，已内置全部数据与本地服务，**不需要安装 Python**。
+首次启动会解压到临时目录，约 1~3 秒。
 
-## 快速开始
-
-双击 `start.bat`，浏览器会自动打开 <http://127.0.0.1:8080/index.html>。
-
-或手动运行：
+### 本地服务
 
 ```bash
 python serve.py 8080
+# 打开 http://127.0.0.1:8080/index.html
 ```
 
-> **必须用 HTTP 服务打开**，不能双击 `index.html`。PMTiles 依赖 HTTP Range
-> 请求按需读取字节，`file://` 协议下浏览器不会发 Range，数据读不出来。
+或用项目根目录的 `启动查看器.bat` / 桌面的 `UOM适飞空域查询.bat`。
 
----
-
-## 文件结构
-
-```
-UOM/
-├── index.html                 查看器页面（单文件，含全部前端逻辑）
-├── serve.py                   本地 HTTP 服务（自己实现了 Range 支持）
-├── start.bat                  Windows 启动脚本
-├── data/
-│   ├── uom-shifei.pmtiles     UOM 适飞空域栅格，z0–z13，85 MB
-│   ├── dji_flysafe.geojson    大疆禁飞/限飞区，4112 个多边形
-│   └── custom_zones.geojson   自定义管制区（ZB(SR)801，非官方）
-├── lib/                       Leaflet 1.9.4 + PMTiles 3.2.1（本地，免 CDN）
-│
-├── download_uom.py            下载/续传数据
-├── build_custom_zones.py      生成自定义管制区
-├── pmtiles_tool.py            PMTiles 读取器 + PNG 像素解析
-├── verify_logic.py            判定逻辑校验（跑已知点）
-├── make_preview.py            导出指定层级预览图
-└── 复刻指南.md                 原始开发笔记
-```
+> **必须用 HTTP 服务打开**，不能双击 `index.html`。
+> PMTiles 依赖 HTTP Range 请求，`file://` 下浏览器不发 Range，数据读不出来。
 
 ---
 
@@ -76,26 +69,17 @@ UOM/
 | ZB(SR)801 | 用户依据 NOTAM C0903/26 转述自行标注 | 2026-09-20 生效 | **非官方边界** |
 
 **UOM 数据的实际日期是 2026-05-23**，取自 PMTiles 元数据的 `version` 字段，
-比 Release 发布日（6 月 3 日）更早。页面上有这个日期的醒目标注。
+比 Release 发布日（6 月 3 日）更早。页面上对这个日期有醒目标注。
 
-> 数据不是实时的。2026-09-20 起 ZB(SR)801 首都禁飞区生效，UOM 平台已同步调整，
-> 但本文件的栅格数据停留在 5 月，**不反映该变动**——这正是需要叠加自定义管制区图层的原因。
-
-### 更新数据
-
-```bash
-python download_uom.py uom-shifei.pmtiles dji_flysafe.geojson
-python build_custom_zones.py     # 改圆心/半径请编辑该脚本
-```
-
-下载脚本走 `api.github.com` 取签名 CDN 直链（`github.com` 主站在国内不稳定），
-支持断点续传，失败会自动换新签名重试。
+> 数据不是实时的。2026-09-20 起 ZB(SR)801 首都禁飞区生效，UOM 平台已同步
+> 调整，但本工具的栅格数据停留在 5 月，**不反映该变动** —— 这正是需要
+> 叠加自定义管制区图层的原因。
 
 ---
 
 ## 判定逻辑
 
-### UOM 适飞空域（栅格法，无需矢量化）
+### UOM 适飞空域（栅格法）
 
 UOM 原始数据是 PNG8 二值栅格，颜色固定、alpha 严格为 0 或 255：
 
@@ -106,41 +90,161 @@ alpha = 0    → 非适飞
 ```
 
 点击时把经纬度换算到 z13 瓦片坐标与瓦片内像素，直接读该像素 alpha。
-z13 分辨率约 20 米/像素，对无人机用途足够。
+z13 分辨率约 20 米/像素。
+
+**这个判定的一个重要性质**：适飞空域只覆盖约 30% 的国土面积（随机撒点实测
+27% 为适飞、71% 无数据）。**城市里看到空白是正常的**，不是加载失败。
+界面上的「适飞层 有数据 N 块 / 空 M 块」就是用来区分这两种情况的。
 
 **已知限制**：边界是像素台阶（原始数据即如此），不适合当作精确边界线使用。
 
 ### 大疆禁飞/限飞区
 
 射线法点在多边形内判定，支持 Polygon / MultiPolygon 与内洞。
-按以下优先级给结论：`restricted`（禁飞）> `authorization` > `warning` > `recommended`。
+结论优先级：`restricted`（禁飞）> `authorization` > `warning` > `recommended`。
 
 ### ZB(SR)801
 
 独立的圆形多边形（天安门圆心，半径 300 km），与官方数据物理隔离存放在
-`custom_zones.geojson`，图层默认虚线红边、低填充，标注明确写「非官方」。
+`data/custom_zones.geojson`，图层默认虚线红边、低填充，标注明确写「非官方」。
 
 ---
 
 ## 底图与坐标系
 
-| 底图 | 坐标系 | 与 UOM 数据偏移 | 需要 Key |
-|------|--------|----------------|---------|
-| 天地图 · 矢量/影像 | CGCS2000 ≈ WGS84 | **无偏移** ✅ | 是（免费） |
-| 高德 · 矢量/卫星 | GCJ-02 | **300–600 米** ⚠️ | 否 |
-| 无底图 | — | — | 否 |
+| 底图 | 坐标系 | 与数据偏移 | 需要 Key |
+|------|--------|-----------|---------|
+| 天地图 · 矢量/影像/地形 | CGCS2000 ≈ WGS84 | **无偏移** | 是（免费） |
+| Esri · 卫星/街道/地形 | WGS84 | **无偏移** | 否 |
+| OSM · 德国/法国镜像 | WGS84 | **无偏移** | 否 |
+| 高德 · 矢量/卫星/注记 | GCJ-02 | **300–600 米** | 否 |
+| 腾讯 · 矢量/卫星 | GCJ-02 | **300–600 米** | 否 |
+| 百度 · 矢量/卫星 | BD-09 | 偏移更大 | 是 |
 
-UOM 与国家 2000 坐标系一致，**天地图是唯一无偏移的底图，推荐使用**。
+UOM 与国家 2000 坐标系一致，**天地图和 Esri 系是唯一无偏移的底图，推荐使用**。
 
 天地图 Key 申请：<https://console.tianditu.gov.cn/api/key>（免费）。
-申请后在页面左上角「底图」区域粘贴保存，存在 localStorage。
+在页面侧栏「API Key」区填入后保存在本机 localStorage。
 
-高德底图会错位，这一点在页面上有明确警告。
+**Key 按「页面源」隔离** —— 在 `127.0.0.1:8080` 存的 key 在
+`github.io` 上读不到，两个源需要各存一次。天地图的 key 申请时还可以
+限定 referrer，为某个域名申请的换域名使用会被拒。
+
+---
+
+## 性能设计
+
+这个工具做过几轮针对性优化，记录在这里供参考。
+
+### 瓦片批量取数（主要优化）
+
+PMTiles 的数据是 clustered 存放的（tile_id 顺序 == 文件偏移顺序），
+同一屏瓦片的 tile_id 跨度通常只有一两百。因此可以把相邻瓦片合并成少量
+字节区间，用几个 Range 请求一次取回，而不是逐张请求：
+
+| 视图 | 瓦片数 | 逐张请求 | 合并后 |
+|------|--------|---------|--------|
+| 陕西 z13 | 45 | 45 | **6** |
+| 山西 z7 | 40 | 40 | **8** |
+| 一屏实测 | 48 | 48 | **3** |
+
+**请求数降到约 1/16，传输字节几乎不膨胀**（有时反而更少，因为区间内本就连续）。
+
+实现放在 Web Worker 里（`tile-worker.js`），自己解析 PMTiles 目录、合并区间、
+切片，主线程只做「拿数据 → 建 blob → 塞给 img」。
+
+### 其他
+
+- **PMTiles 目录二分查找 + 叶子目录缓存** —— 叶子目录有 4096 项，
+  线性扫描会累积成上百毫秒
+- **大疆图层按缩放分级** —— 全国视图下 94% 的多边形不到 3 像素，
+  画它们是纯浪费；低缩放只用 567 个（屏幕尺寸 ≥3px 的）
+- **相邻层级空闲预取** —— 停手 350ms 后预取上下层瓦片，缩放时直接命中
+- **关闭 `chromeWindowsNoCache`** —— pmtiles 库在 Windows+Chromium 上
+  会给每个请求带 `cache:"no-store"` 导致 HTTP 缓存完全失效；
+  服务端补上 ETag/Last-Modified 后可安全关闭
+
+详细的性能分析见 [性能分析.md](性能分析.md)。
+
+---
+
+## 项目结构
+
+```
+UOM/
+├── index.html                 查看器（单文件，含全部前端逻辑）
+├── serve.py                   本地 HTTP 服务（自己实现 Range 支持）
+├── tile-worker.js             Web Worker：批量取数 + PMTiles 解析
+├── desktop_app.py             桌面版入口（pywebview 外壳）
+├── 启动查看器.bat              本地启动脚本
+│
+├── data/
+│   ├── uom-shifei.pmtiles     UOM 适飞空域栅格，z0–z13，85 MB
+│   ├── dji_cn_full.geojson    大疆禁飞/限飞（中国境内，1499 个）
+│   ├── dji_cn_low.geojson     同上，低缩放概览版（567 个）
+│   └── custom_zones.geojson   ZB(SR)801 标注（非官方）
+│
+├── harmony/                   HarmonyOS 工程（ArkTS + Web 组件）
+├── android/                   Android 工程（Java + WebView）
+├── .github/workflows/         CI：云端构建 APK
+│
+├── test_*.js / test_*.py      测试（缓存语义、批量取数、坐标链…）
+├── audit.js                   静态排查脚本
+├── check_order.js             声明顺序检查
+└── 性能分析.md                 性能实测与分析
+```
+
+---
+
+## 打包与分发
+
+| 平台 | 产物 | 构建方式 |
+|------|------|---------|
+| Windows | `UOM-Viewer-Windows-x64.exe` | `python -m PyInstaller build_exe.spec` |
+| HarmonyOS | `UOM-Viewer-HarmonyOS-unsigned.hap` | `bash harmony/scripts/build_hap.sh` |
+| Android | 需 CI 构建 | 推 tag 触发 `.github/workflows/build-apk.yml` |
+
+### Windows
+
+```bash
+pip install pywebview pythonnet pyinstaller
+python -m PyInstaller build_exe.spec --noconfirm
+```
+
+> 打包体积对排除列表很敏感。本机 site-packages 里装了 torch / sklearn 等
+> 大库，不排除的话单文件会到 286MB；`build_exe.spec` 里已排除，产物约 45MB。
+
+### HarmonyOS
+
+需要 DevEco Studio 自带工具链（node / hvigor / jbr / SDK）：
+
+```bash
+bash harmony/scripts/build_hap.sh
+```
+
+> `hvigor` 在打包阶段会 `spawn java`，必须让 `JAVA_HOME` 和 `PATH` 都指向
+> DevEco 自带的 `jbr`，否则报 `spawn java ENOENT`。
+
+产物是**未签名** HAP。要装到真机需在 DevEco 里配置签名（生成证书 +
+Profile），或在 AppGallery Connect 申请调试证书。
+
+### Android
+
+本机没有 Android SDK，因此走 CI：推一个 tag 即触发云端构建，
+产物上传为 artifact。
+
+```bash
+git tag v1.0.0 && git push origin v1.0.0
+```
 
 ---
 
 ## 免责声明
 
-本工具是**个人非官方项目**，数据来自第三方归档且非实时，**不作为飞行依据**。
-实际飞行前请以 UOM 官方平台（<https://uom.caac.gov.cn>）及当地空管部门
+本项目是**个人非官方工具**，与民航局、大疆创新均无关联。
+
+数据来自第三方归档且非实时，**不作为飞行依据**。
+实际飞行前请以 [UOM 官方平台](https://uom.caac.gov.cn) 及当地空管部门
 发布的最新信息为准。
+
+数据版权归原权利方所有，详见 [NOTICE.md](NOTICE.md)。
