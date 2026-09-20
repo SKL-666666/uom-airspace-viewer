@@ -55,9 +55,13 @@ jobs:
           echo "ANDROID_HOME=$ANDROID_HOME"
           ls "$ANDROID_HOME/platforms" || true
 
+      - name: 打印依赖树（排查冲突用）
+        working-directory: android
+        run: gradle :app:dependencies --configuration releaseRuntimeClasspath --no-daemon | tail -80
+
       - name: 构建 release APK
         working-directory: android
-        run: gradle assembleRelease --no-daemon --stacktrace --info
+        run: gradle assembleRelease --no-daemon --stacktrace
 
       - name: 签名
         if: success()

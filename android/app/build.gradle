@@ -10,8 +10,8 @@ android {
         applicationId "com.skl.uomviewer"
         minSdk 24
         targetSdk 34
-        versionCode 1
-        versionName "1.0.0"
+        versionCode 2
+        versionName "1.0.1"
     }
 
     buildTypes {
@@ -30,5 +30,19 @@ android {
 
 dependencies {
     implementation 'androidx.appcompat:appcompat:1.7.0'
-    implementation 'androidx.webkit:webkit:1.11.0'
+    // 不需要 androidx.webkit —— WebView 相关的 API 都在 android.webkit 里，
+    // 而 androidx.webkit 会拖进老版 kotlin-stdlib-jdk8，与新版 kotlin-stdlib
+    // 产生重复类（kotlin.collections.jdk8.CollectionsJDK8Kt），构建直接失败。
+    // 我最初是照惯例加上的，实际代码里一行都没用到，已移除。
+}
+
+// 兜底：把 Kotlin 标准库各分支统一到同一版本。
+// kotlin-stdlib-jdk7/jdk8 从 1.8 起已并入 kotlin-stdlib，若传递依赖仍带旧版，
+// 就会出现重复类。这条约束把旧分支统一到主版本。
+configurations.all {
+    resolutionStrategy {
+        force 'org.jetbrains.kotlin:kotlin-stdlib:1.9.24'
+        force 'org.jetbrains.kotlin:kotlin-stdlib-jdk7:1.9.24'
+        force 'org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.9.24'
+    }
 }
