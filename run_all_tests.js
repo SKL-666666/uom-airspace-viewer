@@ -22,6 +22,7 @@ const SUITE = [
   ['静态审计    audit',          'node', ['audit.js'],                false],
   ['坐标换算    geoconv',        'node', ['test_geoconv.js'],         false],
   ['判定逻辑    query_logic',    'node', ['test_query_logic.js'],     false],
+  ['地名搜索    search',         'node', ['test_search.js'],         false],
   ['瓦片缓存    tile_cache',     'node', ['test_tile_cache.js'],      false],
   ['客户端攒批  batch_client',   'node', ['test_batch_client.js'],    false],
   ['Worker 路径 worker_path',    'node', ['test_worker_path.js'],     true],

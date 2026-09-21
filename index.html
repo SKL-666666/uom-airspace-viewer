@@ -3110,11 +3110,52 @@ function pickNum(o, keys){
 /* 每个地理编码通道返回 [{lat, lon, name}]，坐标一律先换算成 WGS84 再交出去 ——
    下游（判定、标记、收藏、导出）只认 WGS84，换算必须在边界处一次做完。
    失败时抛出的错误要带上接口自己说的话，否则用户只能看到"失败"两个字。 */
-async function geoTianditu(kw){
+/* 天地图 /v2/search 的 postStr。
+   实测：只给 keyWord + queryType 会被拒，返回
+     {"count":0,"resultType":1,"status":{"cndesc":"缺少参数：level","infocode":2003}}
+   —— 这个接口的搜索空间必须被限定：要么给 mapBound（视野范围），要么给 level（级别）。
+   两个都给最稳：mapBound 还能让结果贴合用户当前看的地方。
+   注意 level 用【当前缩放级别】而不是固定值，否则在缩放很大/很小时
+   返回的结果和用户看到的范围对不上。 */
+function tdtPostStr(kw, extra){
+  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+  let mapBound = '';
+  try {
+    const b = map.getBounds();
+    mapBound = [clamp(b.getWest(), -180, 180), clamp(b.getSouth(), -90, 90),
+                clamp(b.getEast(), -180, 180), clamp(b.getNorth(), -90, 90)]
+               .map(v => v.toFixed(6)).join(',');
+  } catch(e){ mapBound = ''; }
+  /* 注意别写 Math.round(z) || 12 —— 缩放级别 0 是合法值，
+     而 0 是 falsy，会被 || 顺手改成 12。判 NaN 要显式来。 */
+  const z = map.getZoom();
+  const body = {
+    keyWord: kw,
+    queryType: 1,                 // 1 = 普通搜索
+    start: 0,
+    count: 8,
+    level: clamp(isFinite(z) ? Math.round(z) : 12, 1, 18),
+  };
+  if (mapBound) body.mapBound = mapBound;
+  return Object.assign(body, extra || {});
+}
+
+/* 这类接口的参数要求常和文档不一致，靠猜没用、靠用户来回试更糟。
+   好在它会把缺的参数名报出来（cndesc），所以：缺什么就补一个合理默认再试一次。
+   只重试一次，避免真出问题时在这里转圈。 */
+const TDT_PARAM_FALLBACK = {
+  level: 12,
+  mapBound: '73.5,3.8,135.1,53.6',      // 全国范围
+  specify: '116.39,39.90',
+  dataTypes: 'poi',
+  queryType: 1, start: 0, count: 8,
+};
+
+async function geoTianditu(kw, extra, retried){
   const tk = CONFIG.keys.tdt;
   if (!tk) throw new Error('未配置天地图 tk');
   const url = 'https://api.tianditu.gov.cn/v2/search?postStr=' +
-    encodeURIComponent(JSON.stringify({ keyWord: kw, queryType: 1, start: 0, count: 8 })) +
+    encodeURIComponent(JSON.stringify(tdtPostStr(kw, extra))) +
     '&type=query&tk=' + encodeURIComponent(tk);
   const r = await fetch(url, { cache: 'no-store' });
   const text = await r.text();
@@ -3126,8 +3167,20 @@ async function geoTianditu(kw){
     const msg = (j && (j.msg || j.resolve)) || text.slice(0, 120) || ('HTTP ' + r.status);
     throw new Error('天地图：' + msg);
   }
+  const st = (j && j.status) || {};
+  const cndesc = String(st.cndesc || '');
+  /* 参数类错误：补参数再试一次 */
+  if (!retried && /缺少参数/.test(cndesc)){
+    const miss = (cndesc.match(/缺少参数[：:]\s*([A-Za-z]+)/) || [])[1];
+    if (miss && TDT_PARAM_FALLBACK[miss] !== undefined){
+      report('GEO_TDT_RETRY', { missing: miss, sent: Object.keys(tdtPostStr(kw)).join(',') });
+      return geoTianditu(kw, { [miss]: TDT_PARAM_FALLBACK[miss] }, true);
+    }
+  }
+  if (cndesc) throw new Error('天地图：' + cndesc + '（' + (st.infocode || '') + '）');
   const pois = (j && (j.pois || (j.data && j.data.pois) || j.result)) || [];
-  report('GEO_TDT', { n: pois.length, keys: Object.keys(j || {}).join(',') });
+  report('GEO_TDT', { n: pois.length, count: j && j.count,
+                      keys: Object.keys(j || {}).join(',') });
   return pois.map(p => {
     const lon = pickNum(p, ['lon', 'lng', 'LON']), lat = pickNum(p, ['lat', 'LAT']);
     if (!isFinite(lon) || !isFinite(lat)) return null;
@@ -4164,6 +4217,11 @@ async function diagGeoTest(){
       continue;
     }
     anyKey = true;
+    if (p.id === 'tdt'){
+      /* 把实际要发的 postStr 打出来。上次线上报"缺少参数：level"，
+         如果有这一行，一眼就能看出请求里根本没有 level。 */
+      try { lines.push('    将发送 ' + JSON.stringify(tdtPostStr(kw))); } catch(e){}
+    }
     const t0 = performance.now();
     try {
       const items = await p.run(kw);
