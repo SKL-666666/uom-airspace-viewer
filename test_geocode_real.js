@@ -18,6 +18,11 @@ const { loadScript, extractFn } = require('./test_util');
 const script = loadScript();
 const parts = ['pickLonLat', 'pickNum', 'parseCoord', 'tdtPostStr', 'geoTianditu']
   .map(n => extractFn(script, n));
+/* parseTdtPayload 由 geoTianditu 内部调用，必须一起求值 ——
+   否则沙箱里没有它，geoTianditu 一进去就抛错（我就这么踩过一次）。 */
+const srcParse = extractFn(script, 'parseTdtPayload');
+if (!srcParse){ console.error('✗ 找不到 parseTdtPayload'); process.exit(1); }
+parts.push(srcParse);
 parts.forEach((p, i) => { if (!p) { console.error('✗ 提取失败 idx=' + i); process.exit(1); } });
 
 /* 照抄用户给的真实返回：字段名、8 项、lonlat 合并字符串 */

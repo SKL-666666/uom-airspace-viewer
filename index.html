@@ -797,7 +797,7 @@
    alpha 严格为 0 或 255，无抗锯齿中间值，因此判定无歧义。
    瓦片缺失 ⇒ 该区域无适飞空域。 */
 /* 构建标识：用来确认浏览器实际加载的是哪一版，排查缓存问题 */
-const BUILD = 'v17.3';
+const BUILD = 'v17.4';
 
 /* 加载层兜底：放在脚本最前面注册。
    之前把它放在末尾，一旦中间某处抛错就永远不执行，页面会卡死在
@@ -3246,11 +3246,39 @@ async function geoTianditu(kw, extra, retried){
      data.pois 都出现过）。只认 pois 一个名字时，接口明明返回 1000（服务正常），
      却会解析出 0 条，症状和“搜不出来”完全一样。
      数组按【形状】认而不是按名字认：任何元素里带得上经纬度的数组都收进来。 */
+  /* 整段解析都包上保护：它读的是外部响应的字段，任何一处类型意外
+     （字段名冲突、值为非预期类型）都会抛错，而抛错信息会被上层统一处理掉，
+     只剩一句"解析不出坐标"—— 等于把真正的原因扔了。
+     这里捕获后原样带出来，让诊断能说清是哪一步、什么错。 */
+  let cand = [], out = [], chosen = null, firstItemKeys = '';
+  const arrSizes = [];
+  try {
+    ({ cand, out, chosen, firstItemKeys } = parseTdtPayload(j, kw, arrSizes));
+  } catch(e){
+    report('GEO_TDT_PARSE_THROW', (e && e.stack ? e.stack.slice(0, 400)
+                                                   : String(e)));
+    throw new Error('天地图：返回结构解析出错（' + ((e && e.message) || e) + '）');
+  }
+  tdtLastCount = (j && typeof j.count === 'number') ? j.count : 0;
+  report('GEO_TDT', {
+    n: out.length, count: j && j.count,
+    topKeys: j ? Object.keys(j).join(',') : '',
+    arrSizes: arrSizes.join(','), used: chosen || '', firstItemKeys: firstItemKeys
+  });
+  return out;
+}
+
+/* 从天地图响应里取出 POI 列表。抽成独立函数是为了能单独测、也为了把
+   "解析"这一步与"发请求/判成功"分开，出错时能定位到具体是哪一步。 */
+function parseTdtPayload(j, kw, arrSizes){
   const cand = [];
   const pushArr = (v, from) => {
     if (Array.isArray(v) && v.length && v.some(x => x && typeof x === 'object')){
       cand.push({ from: from, arr: v });
     }
+    /* 记录每个候选数组的长度，即使它不是合法候选也要记 ——
+       诊断时需要看到"到底有哪些数组、各多长"。 */
+    if (Array.isArray(v)) arrSizes.push(from + '=' + v.length);
   };
   if (j){
     pushArr(j.pois, 'pois');
@@ -3263,12 +3291,9 @@ async function geoTianditu(kw, extra, retried){
       pushArr(j.data.result, 'data.result');
     }
   }
-  const LON_KEYS = ['lon', 'lng', 'longitude', 'LON'];
-  const LAT_KEYS = ['lat', 'latitude', 'LAT'];
   const NAME_KEYS = ['name', 'NAME', 'address', 'addr', 'title', 'keyWord'];
-  let chosen = null, out = [], arrSizes = [], firstItemKeys = '';
+  let chosen = null, out = [], firstItemKeys = '';
   for (const c of cand){
-    arrSizes.push(c.from + '=' + c.arr.length);
     const rows = c.arr.map(x => {
       const ll = pickLonLat(x);
       if (!ll) return null;
@@ -3284,17 +3309,7 @@ async function geoTianditu(kw, extra, retried){
       break;
     }
   }
-  tdtLastCount = (j && typeof j.count === 'number') ? j.count : 0;
-  /* 把真实结构上报出来：万一还是解析不出坐标，日志里能看到到底长什么样，
-     不必再让用户来回试。只在有异常时多写几个字段，正常情况就一行。 */
-  report('GEO_TDT', {
-    n: out.length, count: j && j.count,
-    topKeys: j ? Object.keys(j).join(',') : '',
-    dataKeys: (j && j.data && typeof j.data === 'object')
-      ? Object.keys(j.data).join(',') : '',
-    arrSizes: arrSizes.join(','), used: chosen || '', firstItemKeys: firstItemKeys
-  });
-  return out;
+  return { cand: cand, out: out, chosen: chosen, firstItemKeys: firstItemKeys };
 }
 
 /* 高德 Web 服务。实测 restapi.amap.com 返回 Access-Control-Allow-Origin: *，
@@ -4343,6 +4358,18 @@ async function tdtRawDump(kw){
   try { j = JSON.parse(safe); } catch(e){}
   const lines = [];
   lines.push('原始返回长度 ' + safe.length + ' 字节');
+  /* 同时直接跑一遍解析，把结果与抛错原因都摊开 ——
+     "命中 N 条却解析不出坐标"这类问题，只有这里能看到真正的异常。 */
+  if (j){
+    try {
+      const r = parseTdtPayload(j, kw, []);
+      lines.push('解析结果：' + r.out.length + ' 条（候选数组 ' +
+                 ((r.cand || []).map(c => c.from + '=' + c.arr.length).join(',') || '无') + '）');
+    } catch(e){
+      lines.push('解析抛错：' + ((e && e.message) || e));
+      lines.push('堆栈：' + String((e && e.stack) || '').split('\n').slice(0, 3).join(' | '));
+    }
+  }
   if (j){
     lines.push('结构：' + describeShape(j, 0, 2));
     lines.push('顶层字段：' + Object.keys(j).join(', '));
