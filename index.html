@@ -802,7 +802,7 @@
    alpha 严格为 0 或 255，无抗锯齿中间值，因此判定无歧义。
    瓦片缺失 ⇒ 该区域无适飞空域。 */
 /* 构建标识：用来确认浏览器实际加载的是哪一版，排查缓存问题 */
-const BUILD = 'v18.0';
+const BUILD = 'v18.1';
 
 /* 加载层兜底：放在脚本最前面注册。
    之前把它放在末尾，一旦中间某处抛错就永远不执行，页面会卡死在
@@ -3292,6 +3292,9 @@ async function geoTianditu(kw, extra, retried){
     ({ cand, out, chosen, firstItemKeys } =
        parseTdtPayload(j, kw, arrSizes, text));
   } catch(e){
+    /* 已经是"说清楚了"的错误就原样抛出，不要再包一层 ——
+       包一层会把 tooBroad 这类标记冲掉，上层就只能报一句笼统的失败。 */
+    if (e && e.tooBroad) throw e;
     report('GEO_TDT_PARSE_THROW', (e && e.stack ? e.stack.slice(0, 400)
                                                    : String(e)));
     throw new Error('天地图：返回结构解析出错（' + ((e && e.message) || e) + '）');
@@ -3316,7 +3319,11 @@ async function geoTianditu(kw, extra, retried){
       firstKeys: first ? Object.keys(first).join(',') : '(没有对象元素)',
       /* 原始返回原文。脱敏后截断 —— 这是唯一不需要再猜的东西：
          "没有对象元素"说明结构和我预想的根本不同，只有看到原文才能改对。 */
-      raw: typeof rawText === 'string' ? rawText.slice(0, 1200) : '',
+      /* 优先用服务端原文；拿不到就由 j 重建 ——
+         上一版这里显示为空，等于白留了一个诊断字段。 */
+      raw: (typeof rawText === 'string' && rawText)
+           ? rawText.slice(0, 1200)
+           : (j ? JSON.stringify(j).slice(0, 1200) : ''),
       valueTypes: j ? Object.keys(j).map(k =>
         k + ':' + (Array.isArray(j[k]) ? 'array[' + j[k].length + ']'
                  : typeof j[k])).join(' ') : ''
@@ -3355,22 +3362,25 @@ function firstObjectIn(j){
 function parseTdtPayload(j, kw, arrSizes, rawText){
   const cand = [];
   const pushArr = (v, from) => {
-    if (Array.isArray(v) && v.length && v.some(x => x && typeof x === 'object')){
+    if (Array.isArray(v) && v.length){
       cand.push({ from: from, arr: v });
+      arrSizes.push(from + '=' + v.length);
     }
-    /* 记录每个候选数组的长度，即使它不是合法候选也要记 ——
-       诊断时需要看到"到底有哪些数组、各多长"。 */
-    if (Array.isArray(v)) arrSizes.push(from + '=' + v.length);
   };
+  /* 先按已知名字找，再【把顶层所有数组都扫一遍】。
+     教训：这个接口在不同关键词下的返回并不一致 —— 宽泛的关键词会走
+     "统计聚合"分支，顶层只有 count / statistics / prompt，根本没有 pois。
+     只按名字找就会把"接口没给列表"误判成"解析失败"。 */
   if (j){
-    pushArr(j.pois, 'pois');
-    pushArr(j.poiList, 'poiList');
-    pushArr(j.result, 'result');
-    pushArr(j.data, 'data');
-    if (j.data && typeof j.data === 'object'){
-      pushArr(j.data.pois, 'data.pois');
-      pushArr(j.data.poiList, 'data.poiList');
-      pushArr(j.data.result, 'data.result');
+    const KNOWN = ['pois', 'poiList', 'result', 'data', 'list', 'items'];
+    for (const k of KNOWN) pushArr(j[k], k);
+    for (const k of Object.keys(j)){
+      if (KNOWN.indexOf(k) >= 0) continue;
+      const v = j[k];
+      if (Array.isArray(v)) pushArr(v, k);
+      else if (v && typeof v === 'object'){
+        for (const k2 of KNOWN) pushArr(v[k2], k + '.' + k2);
+      }
     }
   }
   const NAME_KEYS = ['name', 'NAME', 'address', 'addr', 'title', 'keyWord'];
@@ -3390,6 +3400,32 @@ function parseTdtPayload(j, kw, arrSizes, rawText){
       firstItemKeys = first ? Object.keys(first).join(',') : '';
       break;
     }
+  }
+  /* 命中很多条却一个数组都没有 —— 这不是"认不出结构"，而是这个接口在
+     宽泛关键词下走了【统计聚合】分支：顶层只给 count / statistics / prompt，
+     不返回 POI 列表（实测「机场」命中 2196 条就是这种响应）。
+     这两种情况处置完全不同，必须分开：
+       · 接口没给列表   → 让用户把关键词写具体，这不是故障
+       · 给了列表认不出 → 那才是我们的问题，需要看结构 */
+  /* 判据说明（都踩过）：
+     · 不能用 arrSizes.length —— prompt 也是数组（查到了就带），
+       拿它当"接口给了列表"的证据会判不出来；
+     · 关键是顶层【有没有 pois / poiList / result / list / items 这类地点数组】。
+       有 → 说明接口返回了列表，解析不出坐标是我们认不出结构（要报出来给人看）；
+       没有 → 接口走的是统计聚合分支，只给汇总，得让用户把关键词写具体。
+     用户实测「机场」命中 2196 条就是后者：顶层只有 count / prompt /
+     resultType / keyWord / status / statistics，根本没有 pois。 */
+  const LIST_KEYS = ['pois', 'poiList', 'result', 'list', 'items'];
+  const hasList = LIST_KEYS.some(k => k in (j || {}))
+    || (j && j.data && typeof j.data === 'object'
+        && LIST_KEYS.some(k => k in j.data));
+  if (!out.length && !hasList && j && typeof j.count === 'number' && j.count > 0){
+    const agg = new Error('天地图：命中 ' + j.count
+      + ' 条，但接口没有返回地点列表（只回了统计汇总）。'
+      + '关键词太宽泛，请写得更具体，例如「首都机场」而不是「机场」。');
+    agg.tooBroad = true;
+    agg.count = j.count;
+    throw agg;
   }
   return { cand: cand, out: out, chosen: chosen, firstItemKeys: firstItemKeys };
 }
@@ -3449,6 +3485,12 @@ async function geoSearch(kw){
           : '没有匹配结果'));
     } catch(e){
       errors.push((e && e.message) || String(e));
+      if (e && e.tooBroad){
+        /* 关键词太宽泛：不是故障，是关键词选得不够具体。
+           这跟"key 不对/网络不通"是两回事，得分开展示。 */
+        return { items: [], used: '', errors: errors, tooBroad: true,
+                 broadCount: e.count || 0, noneConfigured: false };
+      }
     }
   }
   return { items: [], used: '', errors: errors, noneConfigured: tried === 0 };
@@ -3479,14 +3521,17 @@ async function runSearch(kw){
   if (!kw || local.some(x => x.kind === 'coord')) return;   // 坐标已足够，不必联网
 
   let remote = [], used = '', errors = [], noneConfigured = false;
+  let tooBroad = false, broadCount = 0;
   if (geoCache.has(kw)){
     const hit = geoCache.get(kw);
     remote = hit.items; used = hit.used; errors = hit.errors;
     noneConfigured = hit.noneConfigured;
+    tooBroad = !!hit.tooBroad; broadCount = hit.broadCount || 0;
   } else {
     const r = await geoSearch(kw);
     remote = r.items; used = r.used; errors = r.errors;
     noneConfigured = !!r.noneConfigured;
+    tooBroad = !!r.tooBroad; broadCount = r.broadCount || 0;
     /* 只缓存成功的结果。失败可能是限流或临时网络问题，缓存住会让用户
        一直搜不出来 —— 这种"越试越坏"的行为最难查。 */
     if (remote.length) geoCache.set(kw, { items: remote, used: used, errors: errors });
@@ -3496,6 +3541,10 @@ async function runSearch(kw){
   const merged = local.concat(remote);
   if (merged.length){
     renderSearch(merged, used ? '在线结果来自' + used : null);
+  } else if (tooBroad){
+    renderSearch([], '「' + kw + '」命中的地点太多，接口只回了统计汇总（' +
+      broadCount + ' 条），没有给地点列表。\n请把关键词写得更具体，'
+      + '例如「首都机场」而不是「机场」。');
   } else if (noneConfigured){
     renderSearch([], '在线搜索需要 key：设置 → 图源与 Key 里填天地图 tk '
       + '或高德 Web服务 key。下面两项不用 key 也能用。');

@@ -365,6 +365,39 @@ BODY_INJECT = """<script>
       CONFIG.keys.tdt = '';
     });
 
+    // ---- 12a2. 宽泛关键词（顶层无 pois 的聚合响应）不能报成故障 ----
+    await step('search_toobroad', async function(){
+      var AGG = { count: 2196, prompt: [{type:0,admins:''}], resultType: 1,
+                  keyWord: '机场', statistics: { total: 2196 },
+                  status: { cndesc:'服务正常', infocode: 1000 } };
+      CONFIG.keys.tdt = 'FAKE_TK_FOR_PROBE______________';
+      var realFetch = window.fetch;
+      window.fetch = function(u){
+        if (String(u).indexOf('tianditu') >= 0){
+          return Promise.resolve({ ok:true, status:200,
+            text: function(){ return Promise.resolve(JSON.stringify(AGG)); } });
+        }
+        return realFetch.apply(this, arguments);
+      };
+      geoCache.clear();
+      searchInput.value = '';
+      searchInput.dispatchEvent(new Event('input', { bubbles: true }));
+      searchInput.value = '机场';
+      searchInput.dispatchEvent(new Event('input', { bubbles: true }));
+      await waitFor(function(){ return !!q('#searchResults .sempty'); }, 15000);
+      var note = q('#searchResults .sempty') ? q('#searchResults .sempty').textContent : '';
+      log('tb_display', getComputedStyle(q('#searchResults')).display);
+      log('tb_note', note.slice(0, 140));
+      log('tb_says_too_broad', /太多|太宽泛|更具体/.test(note));
+      log('tb_not_reported_as_failure', !/解析|失败/.test(note));
+      log('tb_rows', document.querySelectorAll('#searchResults .sres').length);
+      window.fetch = realFetch;
+      CONFIG.keys.tdt = '';
+      geoCache.clear();
+      searchInput.value = '';
+      closeSearch();
+    });
+
     // ---- 12b0. 中文输入法：组字期间不能搜拼音 ----
     // 这是"诊断能搜到、搜索框搜不到"的根因所在：
     // 用拼音打字时输入框的值先是拼音，若不区分就会拿拼音去在线搜 → 0 条。

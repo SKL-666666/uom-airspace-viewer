@@ -16,6 +16,9 @@ const script = loadScript(process.argv[2]);
 const fnPost = extractFn(script, 'tdtPostStr');
 const fnParse = extractFn(script, 'parseCoord');
 const fnLonLat = extractFn(script, 'pickLonLat');
+const fnParseTdt = extractFn(script, 'parseTdtPayload');
+const fnFirstObj = extractFn(script, 'firstObjectIn');
+if (!fnParseTdt || !fnFirstObj){ console.error('✗ 找不到 parseTdtPayload / firstObjectIn'); process.exit(1); }
 const fnPickNum = extractFn(script, 'pickNum');
 if (!fnPost || !fnParse || !fnLonLat || !fnPickNum) {
   console.error('✗ 找不到 tdtPostStr / parseCoord / pickLonLat / pickNum');
@@ -51,7 +54,7 @@ const sandbox = {
 vm.createContext(sandbox);
 /* 两个函数都要真正求值进沙箱 —— extractFn 返回的是【源码字符串】，
    只取出不执行的话，下面拿到的就是字符串而不是函数。 */
-vm.runInContext(fnPost + '\n' + fnParse + '\n' + fnLonLat + '\n' + fnPickNum,
+vm.runInContext(fnPost + '\n' + fnParse + '\n' + fnLonLat + '\n' + fnParseTdt + '\n' + fnFirstObj + '\n' + fnPickNum,
   sandbox, { filename: 'search.js' });
 
 const A = makeAsserter('地名搜索参数与坐标解析正确');
@@ -59,6 +62,7 @@ const ok = A.ok;
 const post = sandbox.tdtPostStr;
 const parseCoord = sandbox.parseCoord;
 const pickLonLat = sandbox.pickLonLat;
+const parseTdtPayload = sandbox.parseTdtPayload;
 
 console.log('=== 地名搜索测试 ===\n');
 console.log('— 1. 天地图 postStr 必须限定搜索空间（这次线上就是缺这个）—');
@@ -257,6 +261,39 @@ console.log('\n— 10. pickLonLat 兜底：字段名没见过也要能认 —');
   /* 已知字段名优先，且不受范围限制（境外 POI 也要能用已知字段解析） */
   const r4 = pickLonLat({ lonlat:'139.7,35.6' });
   ok(!!r4 && Math.abs(r4.lat - 35.6) < 1e-6, '已知字段名不受境内范围限制（境外点也能用）');
+}
+
+console.log('\n— 11. 关键词太宽泛时的聚合返回（顶层没有 pois）—');
+{
+  /* 用户实测：搜「机场」命中 2196 条，顶层是
+       count / prompt / resultType / keyWord / status / statistics
+     —— 没有 pois。天地图在关键词太宽泛时走【统计聚合】分支，只给汇总不给列表。
+     这种情况和 key 不对 / 网络不通完全不同，必须分开报，否则用户以为功能坏了。 */
+  const agg = { count: 2196, prompt: [{ type: 0, admins: '' }], resultType: 1,
+                keyWord: '机场', status: { cndesc: '服务正常', infocode: 1000 },
+                statistics: { total: 2196 } };
+  let threw = null;
+  try { parseTdtPayload(agg, '机场', [], JSON.stringify(agg)); }
+  catch(e){ threw = e; }
+  ok(!!threw, '顶层没有数组时应当抛出，而不是静默返回 0 条');
+  ok(threw && threw.tooBroad === true, '标记为 tooBroad（关键词太宽泛）');
+  ok(threw && threw.count === 2196, '带出命中条数 ' + (threw && threw.count));
+  ok(threw && /更具体/.test(threw.message), '提示用户把词写具体');
+  /* 对照组 1：正常响应不能被误判成 tooBroad */
+  const okResp = { count: 958, pois: [{ name: '首都机场', lonlat: '116.4,40.07' }],
+                   status: { cndesc: '服务正常', infocode: 1000 } };
+  const r = parseTdtPayload(okResp, '首都机场', [], JSON.stringify(okResp));
+  ok(r.out.length === 1, '正常响应仍能解析出 1 条（没被误判）');
+  /* 对照组 2：有 pois 列表却认不出坐标 —— 那是我们认不出结构，不是关键词太宽泛。
+     期望：不抛 tooBroad（而是在外层走"上报结构给人看"的分支）。
+     注意断言要写对：这里正确的是【不抛错/不抛 tooBroad】，
+     不能写成"必须抛错"——我就是这么写错过一次。 */
+  const weird = { count: 5, pois: [{ name: 'x', qq: '1,2' }],
+                  status: { cndesc: '服务正常', infocode: 1000 } };
+  let t2 = null;
+  try { parseTdtPayload(weird, 'x', [], JSON.stringify(weird)); } catch(e){ t2 = e; }
+  ok(!(t2 && t2.tooBroad),
+     '有 pois 列表却认不出坐标时，不能说成 tooBroad（那是我们认不出结构）');
 }
 
 process.exit(A.done());
