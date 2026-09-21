@@ -15,6 +15,9 @@ preview_z*.png
 test_*.bin
 .tmp_check/
 
+# 无头浏览器自检用的临时页面副本（由 make_probe.py 生成）
+_probe*.html
+
 # 编码助手的工作目录（计划草稿等，不属于项目内容）
 .zcode/
 
