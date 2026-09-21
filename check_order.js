@@ -39,7 +39,12 @@ function topLevelUse(re) {
 
 const symbols = ['map', 'baseLayer', 'tileStore', 'tileWorker', 'uomLayer',
                  'djiJudge', 'zoneLayer', 'prefetchToken', 'getTileEntry',
-                 'prefetchNeighborZooms', 'syncDjiVisibility', 'queryAt'];
+                 'prefetchNeighborZooms', 'syncDjiVisibility', 'queryAt',
+                 /* 判定与坐标换算：都是顶层函数声明，hoisting 能保命，
+                    但列在这里是为了让"谁依赖谁"一眼可见 */
+                 'evaluatePoint', 'decideVerdict', 'renderResult',
+                 'toast', 'escapeHtml',
+                 'wgs84ToGcj02', 'gcj02ToWgs84', 'mapToWgs', 'wgsToMap'];
 
 console.log('符号声明位置：');
 const decls = {};
@@ -57,6 +62,16 @@ const checks = [
 
 console.log('\n顺序检查：');
 let bad = 0;
+
+/* 先确认符号表里的名字都还存在 —— 重命名后忘了同步这里的话，
+   下面的顺序检查会静默跳过（"未找到，跳过"），护栏就失效了。 */
+const absent = symbols.filter(s => decls[s] === null);
+if (absent.length) {
+  bad += absent.length;
+  console.log('  ✗ 符号表里的这些名字在脚本里找不到（改过名？请同步本文件的 symbols）:');
+  console.log('      ' + absent.join(', '));
+}
+
 for (const c of checks) {
   const u = topLevelUse(c.use);
   const d = decls[c.dep];

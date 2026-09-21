@@ -6,15 +6,17 @@
 <title>UOM 适飞空域查询</title>
 <link rel="stylesheet" href="lib/leaflet.css">
 <style>
-  /* 配色：现代中性浅色。
-     避开两个极端 —— 既不要"深色底 + 亮蓝"的 AI 观感，
-     也不要上一版过于朴素的工业灰。取现代工具的常见做法：
-     半透明白面板 + 轻微模糊 + 柔和投影 + 一个大圆角，
-     强调色用低饱和青灰（非蓝），只在交互元素上出现。 */
+  /* 配色与尺寸令牌。
+     方向仍是"现代中性浅色 + 低饱和青灰强调色"（前面几轮定下来的，不动色系），
+     这一轮升级的是【表面处理】：更大的圆角、更柔和的分层投影、更清晰的字阶。
+
+     字号一律用 rem，根字号由 html{font-size} 决定 —— 这是"字体跟随系统"的关键：
+     浏览器/系统的默认字号改了，整页跟着缩放；设置里也能手动覆盖。
+     写死 px 的话系统设置完全无效，这就是之前"字体不跟系统"的根因。 */
   :root{
     color-scheme: light;
     --bg:#eff1f4;
-    --panel:rgba(255,255,255,.9);
+    --panel:rgba(255,255,255,.92);
     --solid:#ffffff;
     --panel2:#f4f5f7;
     --panel3:#eceef2;
@@ -24,17 +26,69 @@
     --tx2:#6b7280;
     --acc:#2c5f5a;          /* 低饱和青灰，非蓝 */
     --acc-h:#24504b;
+    --acc-bg:rgba(44,95,90,.10);
     --ok:#2f7a4d; --no:#a8372f; --warn:#8a6417;
-    --r-lg:10px; --r-md:6px; --r-sm:4px;
-    --sh:0 4px 16px rgba(15,23,42,.07), 0 1px 3px rgba(15,23,42,.05);
+    --ok-bg:#e9f5ee; --no-bg:#fceeec; --warn-bg:#fdf3e2;
+    --ok-line:#c6e2d2; --no-line:#efc9c4; --warn-line:#f0dcb6;
+    --warn-tx:#7a5413;
+    --sheet:#ffffff;
+    /* 圆角刻度：克制。之前 18px 的浮层圆角 + 毛玻璃 + 多层柔光投影，
+       是"AI 生成界面"最典型的三个特征，这一轮全部收掉：
+       现成的不透明面板、单层浅投影、圆角控制在 10px 以内。 */
+    --r-xl:.625rem;         /* 10px 浮层面板 */
+    --r-lg:.5rem;           /* 8px 卡片 */
+    --r-md:.375rem;         /* 6px 控件 */
+    --r-sm:.25rem;          /* 4px 小元素 */
+    --sh-1:0 1px 2px rgba(15,23,42,.06);
+    --sh-2:0 1px 3px rgba(15,23,42,.10);
+    --sh-3:0 2px 8px rgba(15,23,42,.14);
+    --sh:var(--sh-2);
+    --ease:cubic-bezier(.32,.72,0,1);
+    /* 顶部搜索栏所占高度。所有浮层面板都从这条线以下开始 ——
+       写死数值会在根字号变化时和搜索栏重叠（实测压上去了 8px）。 */
+    --top-h:4.5rem;
+  }
+  /* 深色主题：只改界面，底图与 #map/#loading 的背景保持浅色。
+     原因：底图瓦片全是浅色的，把地图容器背景改深，瓦片没铺满的地方就会
+     露出深色缝隙，拖动时看着像"栅栏"（之前踩过一次）。这条别再改。 */
+  :root[data-theme="dark"]{
+    color-scheme: dark;
+    --bg:#191b1f;
+    --panel:rgba(32,35,40,.92);
+    --solid:#24272c;
+    --panel2:#2b2f35;
+    --panel3:#31353c;
+    --line:#3a3f47;
+    --line2:#2e3238;
+    --tx:#e9ecf0;
+    --tx2:#9aa2ad;
+    --acc:#5fb3a6;
+    --acc-h:#7cc7bb;
+    --acc-bg:rgba(95,179,166,.14);
+    --ok:#6cc48c; --no:#e58074; --warn:#d8ab5c;
+    --ok-bg:#20332a; --no-bg:#3a2523; --warn-bg:#3a3324;
+    --ok-line:#2f4c3c; --no-line:#5a3733; --warn-line:#574c32;
+    --warn-tx:#e0bd7d;
+    --sheet:#24272c;
+    --sh-1:0 1px 2px rgba(0,0,0,.35);
+    --sh-2:0 1px 3px rgba(0,0,0,.45);
+    --sh-3:0 2px 8px rgba(0,0,0,.55);
   }
   *{box-sizing:border-box}
-  html{background:var(--bg)}
+  body{font-size:.8125rem}
+  /* 根字号必须是 100%：rem 全部以它为基准。
+     之前把 .8125rem 同时写在 html 上，等于把 1rem 钉在 13px（0.8125×16），
+     所有组件都比设计值小 19%，而且"跟随系统字号"失效 ——
+     用户把系统字号调到 20px，整页只会得到 16.25px。 */
+  html{background:var(--bg);font-size:100%}
   html,body{margin:0;height:100%;background:var(--bg);color:var(--tx);
-            overscroll-behavior:none;font-size:13px;
-            -webkit-font-smoothing:antialiased;
-            font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",
-                        "Hiragino Sans GB","Microsoft YaHei",sans-serif}
+            overscroll-behavior:none;
+            -webkit-text-size-adjust:100%;text-size-adjust:100%;
+            -webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;
+            /* system-ui 放最前 —— 这是"跟随系统字体"的前提 */
+            font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",
+                        "PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif}
+  /* 地图容器背景固定浅色，深色主题下也不动（见上面的说明） */
   #map{position:absolute;inset:0;background:#e6e8ec}
   .leaflet-container{background:#e6e8ec}
   .leaflet-pane,.leaflet-tile-pane{background:transparent}
@@ -46,135 +100,359 @@
   .leaflet-zoom-anim .leaflet-zoom-animated{
     transition:transform .13s cubic-bezier(0,0,.25,1);
   }
+  /* 左下缩放控件与比例尺：套用面板观感（去掉毛玻璃） */
+  .leaflet-control-zoom{border:none!important;box-shadow:var(--sh-2)!important;
+                        border-radius:var(--r-md)!important;overflow:hidden}
+  .leaflet-control-zoom a{width:2rem!important;height:2rem!important;
+                          line-height:2rem!important;font-size:1.0625rem!important;
+                          background:var(--solid)!important;color:var(--tx)!important;
+                          border-color:var(--line)!important}
+  .leaflet-control-zoom a:hover{background:var(--panel2)!important}
+  .leaflet-control-zoom a:first-child{border-bottom:1px solid var(--line)!important}
+  .leaflet-control-scale-line{background:var(--solid)!important;
+                              border-color:var(--tx2)!important;color:var(--tx2)!important;
+                              border-radius:var(--r-sm);padding:0 .25rem;
+                              font-size:.625rem}
 
   /* ---------- 浮层面板 ---------- */
-  .panel{position:absolute;z-index:1000;background:var(--panel);
-         -webkit-backdrop-filter:blur(12px) saturate(1.4);
-         backdrop-filter:blur(12px) saturate(1.4);
-         border:1px solid var(--line);border-radius:var(--r-lg);
-         box-shadow:var(--sh)}
-  #topbar{top:10px;left:10px;right:10px;display:flex;align-items:center;gap:8px;
-          padding:8px 12px;flex-wrap:wrap}
-  #topbar h1{font-size:13px;margin:0;font-weight:600;letter-spacing:.1px}
-  .badge{font-size:11px;padding:2px 8px;border-radius:999px;background:var(--panel3);
-         color:var(--tx2);border:1px solid transparent;white-space:nowrap}
-  .badge.stale{background:#fdf3e2;color:var(--warn);border-color:#f0dcb6}
-  .badge.ok{background:#e9f5ee;color:var(--ok);border-color:#c6e2d2}
-  .badge.err{background:#fceeec;color:var(--no);border-color:#efc9c4}
-  .spacer{flex:1}
+  /* 不用毛玻璃：backdrop-filter 是最显眼的"AI 界面"特征之一，
+     而且在低端设备上很吃性能（每帧重算模糊）。改成不透明面板。 */
+  .panel{position:absolute;z-index:1000;background:var(--solid);
+         border:1px solid var(--line);border-radius:var(--r-xl);
+         box-shadow:var(--sh-2)}
+  /* 可开合面板：默认隐藏，.on 才显示。
+     注意 check_ids.js 会校验"脚本切换的 class 必须有能命中该元素的规则"，
+     所以下面这条 .pop.on 不能删 —— 删了所有面板都打不开，而且不报错。 */
+  .pop{display:none}
+  .pop.on{display:block}
 
-  /* ---------- 左侧栏（可折叠） ---------- */
-  #side{top:56px;left:10px;width:240px;max-height:calc(100% - 76px);overflow-y:auto;
-        padding:4px 0}
+  /* ---------- 顶部：标题 + 搜索 + 入口 ---------- */
+  #topbar{top:.625rem;left:.625rem;right:.625rem;display:flex;align-items:center;
+          gap:.5rem;padding:.5rem .625rem;flex-wrap:nowrap}
+  #brand{font-size:.8125rem;font-weight:650;letter-spacing:.01em;
+         white-space:nowrap;flex:none;color:var(--tx)}
+  #searchWrap{position:relative;flex:1 1 auto;max-width:26rem;margin:0 auto}
+  .sic{position:absolute;left:.625rem;top:50%;transform:translateY(-50%);
+       width:1rem;height:1rem;color:var(--tx2);pointer-events:none}
+  #searchInput{padding-left:2.125rem;padding-right:2.125rem;border-radius:var(--r-md);
+               background:var(--solid);height:2.125rem}
+  #searchClear{position:absolute;right:.375rem;top:50%;transform:translateY(-50%);
+               width:1.5rem;height:1.5rem;padding:0;border:none;background:transparent;
+               color:var(--tx2);border-radius:var(--r-sm);display:flex;align-items:center;
+               justify-content:center}
+  #searchClear:hover{background:var(--panel3)}
+  #searchResults{position:absolute;top:calc(100% + .375rem);left:0;right:0;
+                 max-height:min(22rem,50vh);overflow-y:auto;padding:.25rem;
+                 border-radius:var(--r-lg);box-shadow:var(--sh-3)}
+  .sres{display:flex;align-items:center;gap:.5rem;padding:.5rem .625rem;
+        border-radius:var(--r-md);cursor:pointer;font-size:.8125rem}
+  .sres:hover,.sres.sel{background:var(--acc-bg)}
+  .sres .sr-k{flex:none;font-size:.625rem;padding:.0625rem .375rem;border-radius:var(--r-sm);
+              background:var(--panel3);color:var(--tx2)}
+  .sres .sr-n{flex:1 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .sres .sr-d{flex:none;color:var(--tx2);font-size:.6875rem}
+  .sempty{padding:.75rem .625rem;color:var(--tx2);font-size:.75rem;text-align:center}
+
+  /* ---------- 右侧竖工具条 ---------- */
+  #toolbar{position:absolute;right:.625rem;top:50%;transform:translateY(-50%);
+           z-index:1000;display:flex;flex-direction:column;gap:.25rem}
+  .tb{width:2.25rem;height:2.25rem;padding:0;flex:none;
+      display:flex;align-items:center;justify-content:center;
+      background:var(--solid);color:var(--tx);
+      border:1px solid var(--line);border-radius:var(--r-md);box-shadow:var(--sh-1);
+      transition:background .12s,color .12s,border-color .12s}
+  .tb:hover{background:var(--panel2);border-color:var(--tx2)}
+  .tb:active{background:var(--panel3)}
+  .tb svg{width:1.0625rem;height:1.0625rem}
+  .tb.on{background:var(--acc);border-color:var(--acc);color:#fff}
+  .tb.on:hover{background:var(--acc-h)}
+
+  /* ---------- 底部坐标读数 ----------
+     只留一个坐标读数，放在右下角。原来的底部状态条（5 个徽章）左下方正好
+     压住 Leaflet 的缩放按钮，而且信息本来就冗余 —— 那些状态已移进设置面板。 */
+  #coordBar{position:absolute;right:.625rem;
+            bottom:calc(.625rem + env(safe-area-inset-bottom,0px));
+            z-index:900;font-size:.6875rem;color:var(--tx2);
+            font-family:ui-monospace,Menlo,Consolas,monospace;
+            background:var(--solid);border:1px solid var(--line);
+            border-radius:var(--r-sm);padding:.125rem .375rem;pointer-events:none}
+  /* 状态徽章：只在设置面板里出现，样式跟着面板走 */
+  .badge{font-size:.6875rem;padding:.0625rem .375rem;border-radius:var(--r-sm);
+         background:var(--panel3);color:var(--tx2);border:1px solid transparent;
+         white-space:nowrap;display:inline-block}
+  .badge.stale{background:var(--warn-bg);color:var(--warn);border-color:var(--warn-line)}
+  .badge.ok{background:var(--ok-bg);color:var(--ok);border-color:var(--ok-line)}
+  .badge.err{background:var(--no-bg);color:var(--no);border-color:var(--no-line)}
+  .statusrow{display:flex;flex-wrap:wrap;gap:.25rem;margin-bottom:.5rem}
+
+  /* ---------- 侧栏面板（图层 / 设置 / 收藏 / 数据）---------- */
+  #side{top:var(--top-h);left:.625rem;width:17rem;max-height:calc(100% - 7.5rem);
+        overflow-y:auto;padding:.25rem 0;flex-direction:column}
+  #side.on{display:flex}
+  #panelFav,#panelData{top:var(--top-h);right:.625rem;width:19rem;
+        max-height:calc(100% - 7.5rem);overflow-y:auto;padding:.75rem}
   .sec{border-bottom:1px solid var(--line2);margin:0;padding:0}
-  .sec:last-child{border-bottom:none;padding-bottom:4px}
-  .sec>summary{cursor:pointer;list-style:none;padding:10px 13px;font-size:11.5px;
-               font-weight:600;color:var(--tx2);user-select:none;position:relative;
-               letter-spacing:.2px;border-radius:var(--r-md);margin:0 4px}
+  .sec:last-child{border-bottom:none;padding-bottom:.25rem}
+  .sec>summary{cursor:pointer;list-style:none;padding:.625rem .8125rem;
+               font-size:.71875rem;font-weight:650;color:var(--tx2);
+               user-select:none;position:relative;letter-spacing:.02em;
+               border-radius:var(--r-md);margin:0 .25rem}
   .sec>summary::-webkit-details-marker{display:none}
-  .sec>summary::after{content:'';position:absolute;right:13px;top:50%;
-                      width:5px;height:5px;border-right:1.4px solid var(--tx2);
-                      border-bottom:1.4px solid var(--tx2);
-                      transform:translateY(-70%) rotate(45deg);transition:transform .15s}
+  .sec>summary::after{content:'';position:absolute;right:.8125rem;top:50%;
+                      width:.3125rem;height:.3125rem;
+                      border-right:1.4px solid var(--tx2);border-bottom:1.4px solid var(--tx2);
+                      transform:translateY(-70%) rotate(45deg);transition:transform .15s var(--ease)}
   .sec[open]>summary::after{transform:translateY(-30%) rotate(-135deg)}
   .sec>summary:hover{background:var(--panel2);color:var(--tx)}
-  .sec>*:not(summary){margin-left:13px;margin-right:13px}
-  .sec>*:last-child{margin-bottom:11px}
+  .sec>*:not(summary){margin-left:.8125rem;margin-right:.8125rem}
+  .sec>*:last-child{margin-bottom:.6875rem}
 
-  .row{display:flex;align-items:center;gap:8px;padding:5px 0;font-size:13px;
-       cursor:pointer;user-select:none}
-  .row input[type=checkbox]{accent-color:var(--acc);width:15px;height:15px;
-                            cursor:pointer;flex:none;border-radius:3px}
-  .row .dot{width:9px;height:9px;border-radius:50%;flex:none;
+  .row{display:flex;align-items:center;gap:.5rem;padding:.3125rem 0;
+       font-size:.8125rem;cursor:pointer;user-select:none}
+  .row input[type=checkbox]{accent-color:var(--acc);width:.9375rem;height:.9375rem;
+                            cursor:pointer;flex:none;border-radius:.1875rem}
+  .row .dot{width:.5625rem;height:.5625rem;border-radius:50%;flex:none;
             box-shadow:inset 0 0 0 1px rgba(0,0,0,.12)}
-  .row .sub{font-size:10.5px;color:var(--tx2);margin-left:auto;flex:none}
-  input[type=range]{width:100%;accent-color:var(--acc);margin:3px 0 7px;height:18px}
+  .row .sub{font-size:.65625rem;color:var(--tx2);margin-left:auto;flex:none}
+  input[type=range]{width:100%;accent-color:var(--acc);margin:.1875rem 0 .4375rem;
+                    height:1.125rem}
   select,button,input[type=text]{width:100%;background:var(--solid);color:var(--tx);
-        border:1px solid var(--line);border-radius:var(--r-md);padding:6px 8px;
-        font-size:12.5px;font-family:inherit;outline:none;
-        transition:border-color .12s, box-shadow .12s}
+        border:1px solid var(--line);border-radius:var(--r-md);padding:.375rem .5rem;
+        font-size:.78125rem;font-family:inherit;outline:none;
+        transition:border-color .12s,box-shadow .12s,background .12s}
   select:focus,input[type=text]:focus{border-color:var(--acc);
-        box-shadow:0 0 0 3px rgba(44,95,90,.12)}
+        box-shadow:0 0 0 3px var(--acc-bg)}
   button{cursor:pointer;background:var(--solid)}
   button:hover{background:var(--panel2)}
   button.primary{background:var(--acc);border-color:var(--acc);color:#fff}
   button.primary:hover{background:var(--acc-h);border-color:var(--acc-h)}
-  input[type=text]+input[type=text]{margin-top:6px}
-  .btnrow{display:flex;gap:6px;margin-top:8px}
+  input[type=text]+input[type=text]{margin-top:.375rem}
+  .btnrow{display:flex;gap:.375rem;margin-top:.5rem}
   .btnrow>button{flex:1}
-  .hint,.note{font-size:10.5px;line-height:1.6;color:var(--tx2);margin:6px 0 0}
-  .note{margin-bottom:11px}
-  code{background:var(--panel3);border-radius:var(--r-sm);padding:1px 4px;
-       font-size:10px;word-break:break-all;font-family:ui-monospace,Menlo,Consolas,monospace}
-  .warnbox{font-size:10.5px;line-height:1.6;background:#fdf3e2;border:1px solid #f0dcb6;
-           color:#7a5413;border-radius:var(--r-md);padding:7px 9px;margin-top:8px;display:none}
-  .warnbox.on{display:block;margin-bottom:11px}
-  .warnbox a{color:#7a5413}
+  .hint,.note{font-size:.65625rem;line-height:1.6;color:var(--tx2);margin:.375rem 0 0}
+  .note{margin-bottom:.6875rem}
+  code{background:var(--panel3);border-radius:var(--r-sm);padding:.0625rem .25rem;
+       font-size:.625rem;word-break:break-all;
+       font-family:ui-monospace,Menlo,Consolas,monospace}
+  .warnbox{font-size:.65625rem;line-height:1.6;background:var(--warn-bg);
+           border:1px solid var(--warn-line);color:var(--warn-tx);
+           border-radius:var(--r-md);padding:.4375rem .5625rem;margin-top:.5rem;
+           display:none;position:relative}
+  .warnbox.on{display:block;margin-bottom:.6875rem}
+  .warnbox a{color:var(--warn-tx)}
+  .warnbox .x{position:absolute;top:.25rem;right:.375rem;cursor:pointer;
+              font-size:.875rem;line-height:1;opacity:.7}
+  .warnbox .x:hover{opacity:1}
+  .warnbox .x-restore{position:absolute;top:.25rem;right:.375rem;cursor:pointer;
+                      font-size:.625rem;opacity:.75;text-decoration:underline}
+  /* 原生 select 作为"取值/取数据的后备存储"，界面上被自定义下拉替代。
+     必须留一个真 select：脚本里大量按 .value 取值、buildBaseOptions 往里塞
+     option，以及省市列表本身就是数据源。隐藏它，用 .usel 呈现。 */
+  .hidden-native{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none;
+                 margin:0;padding:0;border:0;overflow:hidden}
 
-  /* ---------- 结果卡片 ---------- */
-  #result{top:56px;right:10px;width:276px;max-height:calc(100% - 76px);
-          overflow-y:auto;padding:13px;display:none}
-  #result.on{display:block}
-  #result h2{font-size:12px;margin:0 0 3px;font-weight:600}
-  .coord{font-size:11px;color:var(--tx2);margin-bottom:10px;
+  /* ---------- 自定义下拉 ----------
+     为什么要自己写：原生 <select> 展开后的列表由操作系统绘制，CSS 完全管不到，
+     font-size 之类一律无效 —— 这就是"二级下拉字体太大"的根因。 */
+  .usel{position:relative}
+  .usel>button.usel-btn{display:flex;align-items:center;gap:.375rem;text-align:left}
+  .usel>button.usel-btn>span{flex:1 1 auto;overflow:hidden;text-overflow:ellipsis;
+                             white-space:nowrap}
+  .usel>button.usel-btn>i{flex:none;width:.3125rem;height:.3125rem;
+      border-right:1.4px solid var(--tx2);border-bottom:1.4px solid var(--tx2);
+      transform:translateY(-25%) rotate(45deg);transition:transform .15s var(--ease)}
+  .usel.open>button.usel-btn>i{transform:translateY(25%) rotate(-135deg)}
+  .usel-list{position:absolute;top:calc(100% + .25rem);left:0;right:0;z-index:10;
+             max-height:15rem;overflow-y:auto;padding:.25rem;display:none;
+             background:var(--solid);border:1px solid var(--line);
+             border-radius:var(--r-md);box-shadow:var(--sh-3)}
+  .usel.open>.usel-list{display:block}
+  .usel-list .usel-opt{padding:.375rem .5rem;border-radius:var(--r-sm);
+        cursor:pointer;font-size:.78125rem;display:flex;align-items:center;gap:.375rem}
+  .usel-list .usel-opt:hover,.usel-list .usel-opt.sel{background:var(--acc-bg)}
+  .usel-list .usel-opt .uo-sub{margin-left:auto;font-size:.625rem;color:var(--tx2);flex:none}
+  .usel-list .usel-opt[aria-disabled="true"]{opacity:.45;cursor:not-allowed}
+  .usel-list .usel-group{padding:.375rem .5rem .125rem;font-size:.625rem;
+        color:var(--tx2);font-weight:650}
+
+  /* ---------- 结果：底部抽屉 ----------
+     桌面限宽居中，移动端贴底。带拖拽手柄，可收起为一行。
+     做成抽屉而不是右上角小卡片，是为了移动端不用再维护第二套布局。 */
+  #result{left:50%;transform:translateX(-50%);width:min(28rem,calc(100% - 1.25rem));
+          bottom:calc(.625rem + env(safe-area-inset-bottom,0px));
+          max-height:min(70vh,34rem);overflow-y:auto;padding:0;
+          background:var(--sheet);border-radius:var(--r-xl);box-shadow:var(--sh-3)}
+  #resGrip{position:sticky;top:0;z-index:2;display:flex;align-items:center;
+           justify-content:center;padding:.5rem 0 .25rem;background:var(--sheet);
+           border-radius:var(--r-xl) var(--r-xl) 0 0;cursor:pointer}
+  #resGrip::before{content:'';width:2.25rem;height:.25rem;border-radius:999px;
+                   background:var(--line);display:block}
+  #resGrip:hover::before{background:var(--tx2)}
+  #resBody{padding:0 .875rem .875rem}
+  .coord{font-size:.6875rem;color:var(--tx2);margin-bottom:.625rem;
          font-family:ui-monospace,Menlo,Consolas,monospace}
-  .verdict{padding:10px;border-radius:var(--r-md);margin-bottom:10px;
+  .verdict{padding:.625rem;border-radius:var(--r-md);margin-bottom:.625rem;
            text-align:center;border:1px solid}
-  .verdict .big{font-size:17px;font-weight:700;letter-spacing:.2px}
-  .verdict .small{font-size:10.5px;opacity:.92;margin-top:3px;line-height:1.5}
-  .v-ok{background:#e9f5ee;border-color:#c6e2d2;color:var(--ok)}
-  .v-no{background:#fceeec;border-color:#efc9c4;color:var(--no)}
+  .verdict .big{font-size:1.0625rem;font-weight:700;letter-spacing:.01em}
+  .verdict .small{font-size:.65625rem;opacity:.92;margin-top:.1875rem;line-height:1.5}
+  .v-ok{background:var(--ok-bg);border-color:var(--ok-line);color:var(--ok)}
+  .v-no{background:var(--no-bg);border-color:var(--no-line);color:var(--no)}
   .v-unk{background:var(--panel2);border-color:var(--line);color:var(--tx2)}
-  .krow{display:flex;justify-content:space-between;gap:9px;font-size:11.5px;
-        padding:6px 0;border-top:1px solid var(--line2)}
+  .krow{display:flex;justify-content:space-between;gap:.5625rem;font-size:.71875rem;
+        padding:.375rem 0;border-top:1px solid var(--line2)}
   .krow .k{color:var(--tx2);flex:none}
   .krow .v{text-align:right;word-break:break-all}
-  .disclaim{font-size:10px;color:var(--tx2);line-height:1.65;margin-top:11px;
-            padding-top:9px;border-top:1px solid var(--line2)}
-  .close{position:absolute;top:9px;right:10px;background:none;border:none;
-         color:var(--tx2);font-size:16px;padding:3px 6px;width:auto;line-height:1;
-         border-radius:var(--r-sm)}
+  .disclaim{font-size:.625rem;color:var(--tx2);line-height:1.65;margin-top:.6875rem;
+            padding-top:.5625rem;border-top:1px solid var(--line2)}
+  .close{position:absolute;top:.375rem;right:.375rem;background:none;border:none;
+         color:var(--tx2);font-size:1rem;padding:.1875rem .375rem;width:auto;
+         line-height:1;border-radius:var(--r-sm);z-index:3}
   .close:hover{background:var(--panel2)}
+  #result.min #resGrip{border-radius:var(--r-xl)}
 
-  #loading{position:absolute;inset:0;z-index:2000;background:var(--bg);display:flex;
+  /* ---------- 测量面板 ----------
+     放在顶部居中：左下是缩放、右中是工具条、右下是坐标，只有这里不打架。
+     之前把结果放在右上角的 Leaflet 控件里，正好被搜索栏盖住 —— 这就是
+     "看不出测算数字"的原因。这里改成独立面板，数字用大字。 */
+  #measurePanel{top:var(--top-h);left:50%;transform:translateX(-50%);
+                width:min(19rem,calc(100% - 1.25rem));padding:.625rem .75rem;
+                z-index:1100}
+  #measurePanel .mp-title{font-size:.6875rem;font-weight:650;color:var(--tx2);
+                          margin-bottom:.5rem}
+  #measurePanel .mp-big{font-size:1.125rem;font-weight:650;line-height:1.25;
+                        font-variant-numeric:tabular-nums}
+  #measurePanel .mp-sub{font-size:.6875rem;color:var(--tx2);margin-top:.1875rem;
+                        font-variant-numeric:tabular-nums}
+  #measurePanel .mp-hint{font-size:.65625rem;color:var(--tx2);margin-top:.5rem;
+                         line-height:1.5}
+  .mp-kinds{display:flex;gap:.375rem}
+  .mp-kinds>button{flex:1}
+
+  #result.min #resBody,#result.min .close{display:none}
+
+  #loading{position:absolute;inset:0;z-index:2000;background:#eff1f4;display:flex;
            align-items:center;justify-content:center;flex-direction:column;
-           gap:12px;font-size:12.5px;color:var(--tx2)}
-  #loading .bar{width:180px;height:3px;background:var(--line);border-radius:2px;overflow:hidden}
-  #loading .bar i{display:block;height:100%;width:35%;background:var(--acc);
+           gap:.75rem;font-size:.78125rem;color:#6b7280}
+  #loading .bar{width:11.25rem;height:3px;background:#dfe2e7;border-radius:2px;
+                overflow:hidden}
+  #loading .bar i{display:block;height:100%;width:35%;background:#2c5f5a;
                   border-radius:2px;animation:sl 1.1s ease-in-out infinite}
   @keyframes sl{0%{transform:translateX(-100%)}100%{transform:translateX(330%)}}
 
-  #menuBtn{display:none;width:auto;flex:none;padding:4px 10px;font-size:14px;line-height:1}
-  #backdrop{display:none;position:absolute;inset:0;z-index:900;background:rgba(15,23,42,.32);
+  #backdrop{display:none;position:absolute;inset:0;z-index:900;
+            background:rgba(15,23,42,.32);
             -webkit-backdrop-filter:blur(2px);backdrop-filter:blur(2px)}
   #backdrop.on{display:block}
-  #errbar{display:none;position:absolute;top:56px;left:10px;right:10px;z-index:1500;
-          background:#fceeec;border:1px solid #efc9c4;color:#7d2a25;
-          border-radius:var(--r-lg);padding:10px 12px;font-size:11.5px;line-height:1.6;
-          max-height:34vh;overflow-y:auto;white-space:pre-wrap;
-          box-shadow:var(--sh);font-family:ui-monospace,Menlo,Consolas,monospace}
+  #errbar{display:none;position:absolute;top:var(--top-h);left:.625rem;right:.625rem;
+          z-index:1500;background:var(--no-bg);border:1px solid var(--no-line);
+          color:#7d2a25;border-radius:var(--r-lg);padding:.625rem .75rem;
+          font-size:.71875rem;line-height:1.6;max-height:34vh;overflow-y:auto;
+          white-space:pre-wrap;box-shadow:var(--sh-2);
+          font-family:ui-monospace,Menlo,Consolas,monospace}
+  :root[data-theme="dark"] #errbar{color:#f0b0a7}
   #errbar.on{display:block}
-  #errbar .x{position:absolute;top:6px;right:9px;cursor:pointer;font-size:14px}
+  #errbar .x{position:absolute;top:.375rem;right:.5625rem;cursor:pointer;font-size:.875rem}
 
-  /* ---------------- 手机竖屏 ---------------- */
+  /* ---------- 轻提示 ----------
+     右下角浮出、自动消失，用来替代 alert()。
+     左侧色条区分性质，其余保持与面板一致的观感。 */
+  #toast{position:absolute;right:.625rem;
+         bottom:calc(2.375rem + env(safe-area-inset-bottom,0px));
+         z-index:1800;display:flex;flex-direction:column;gap:.375rem;
+         align-items:flex-end;pointer-events:none;max-width:min(22.5rem,86vw)}
+  #toast .tst{pointer-events:auto;width:100%;background:var(--solid);
+              border:1px solid var(--line);border-left:3px solid var(--tx2);
+              border-radius:var(--r-md);box-shadow:var(--sh-2);padding:.5rem .6875rem;
+              font-size:.71875rem;line-height:1.6;color:var(--tx);
+              animation:tst-in .18s var(--ease)}
+  #toast .tst.ok{border-left-color:var(--ok)}
+  #toast .tst.err{border-left-color:var(--no)}
+  #toast .tst.warn{border-left-color:var(--warn)}
+  #toast .tst .tst-title{font-weight:650}
+  #toast .tst .tst-detail{color:var(--tx2);margin-top:.1875rem;white-space:pre-wrap}
+  #toast .tst .tst-act{margin-top:.375rem;display:flex;gap:.375rem}
+  #toast .tst .tst-act>button{width:auto;padding:.1875rem .5625rem;font-size:.6875rem}
+  #toast .tst.out{opacity:0;transform:translateY(6px);
+                  transition:opacity .16s ease,transform .16s ease}
+  @keyframes tst-in{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+
+  /* ---------- 表单字段 / 面板小标题 / 数据面板 ---------- */
+  .fld{margin-top:.625rem}
+  .fld:first-child{margin-top:0}
+  .fl{display:block;font-size:.65625rem;color:var(--tx2);margin-bottom:.25rem;
+      font-weight:600}
+  .phead{display:flex;align-items:center;justify-content:space-between;
+         margin-bottom:.625rem;font-size:.8125rem}
+  .phead .close{position:static;top:auto;right:auto}
+  textarea{width:100%;background:var(--solid);color:var(--tx);border:1px solid var(--line);
+           border-radius:var(--r-md);padding:.375rem .5rem;font-size:.75rem;
+           font-family:ui-monospace,Menlo,Consolas,monospace;outline:none;resize:vertical;
+           transition:border-color .12s,box-shadow .12s}
+  textarea:focus{border-color:var(--acc);box-shadow:0 0 0 3px var(--acc-bg)}
+  input[type=file]{font-size:.71875rem;color:var(--tx2)}
+  input[type=file]::file-selector-button{background:var(--solid);color:var(--tx);
+        border:1px solid var(--line);border-radius:var(--r-md);padding:.3125rem .5rem;
+        font-size:.71875rem;font-family:inherit;cursor:pointer;margin-right:.375rem}
+  input[type=file]::file-selector-button:hover{background:var(--panel2)}
+  /* 收藏列表 */
+  .fav-row{display:flex;align-items:center;gap:.5rem;padding:.4375rem .5rem;
+           border-radius:var(--r-md);cursor:pointer;font-size:.75rem}
+  .fav-row:hover{background:var(--panel2)}
+  .fav-row .fr-n{flex:1 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .fav-row .fr-c{flex:none;color:var(--tx2);font-size:.625rem;
+                 font-family:ui-monospace,Menlo,Consolas,monospace}
+  .fav-row .fr-x{flex:none;width:1.375rem;height:1.375rem;padding:0;border:none;
+                 background:transparent;color:var(--tx2);border-radius:var(--r-sm);
+                 display:flex;align-items:center;justify-content:center}
+  .fav-row .fr-x:hover{background:var(--no-bg);color:var(--no)}
+  .empty{color:var(--tx2);font-size:.71875rem;text-align:center;padding:.875rem .5rem}
+  /* 批量查询结果 */
+  .bulk-sum{font-size:.71875rem;margin:.625rem 0 .375rem;line-height:1.6}
+  .bulk-tbl{width:100%;border-collapse:collapse;font-size:.65625rem}
+  .bulk-tbl th,.bulk-tbl td{padding:.25rem .3125rem;border-bottom:1px solid var(--line2);
+                            text-align:left;white-space:nowrap}
+  .bulk-tbl th{color:var(--tx2);font-weight:650;position:sticky;top:0;
+               background:var(--solid)}
+  .bulk-scroll{max-height:15rem;overflow:auto;border:1px solid var(--line);
+               border-radius:var(--r-md)}
+  .tag{display:inline-block;padding:.0625rem .3125rem;border-radius:var(--r-sm);
+       font-size:.625rem;border:1px solid transparent}
+  .tag.ok{background:var(--ok-bg);color:var(--ok);border-color:var(--ok-line)}
+  .tag.no{background:var(--no-bg);color:var(--no);border-color:var(--no-line)}
+  .tag.unk{background:var(--panel3);color:var(--tx2)}
+  /* 结果抽屉收起态：只留一条手柄 */
+  #result.min{max-height:none}
+  #result.min #resGrip{padding:.5rem 0}
+
+  /* ---------------- 手机窄屏 ---------------- */
   @media(max-width:760px), (max-height:520px) and (orientation:portrait){
-    #menuBtn{display:block}
-    #topbar{top:7px;left:7px;right:7px;padding:8px 10px;gap:6px}
-    #topbar h1{font-size:12.5px;order:-1;width:100%;margin-bottom:1px}
-    #topbar .badge{font-size:10px;padding:1px 6px}
-    #bdPos{display:none}
-    #side{position:absolute;top:0;bottom:0;left:0;width:min(86vw,330px);max-height:none;
-          border-radius:0 var(--r-lg) var(--r-lg) 0;z-index:1000;
-          transform:translateX(-102%);transition:transform .22s cubic-bezier(.32,.72,0,1);
-          padding-bottom:calc(12px + env(safe-area-inset-bottom,0px))}
-    #side.on{transform:translateX(0)}
-    #result{left:7px;right:7px;width:auto;top:auto;max-height:56%;
-            border-radius:var(--r-lg);
-            bottom:calc(7px + env(safe-area-inset-bottom,0px))}
-    .row{padding:11px 0;font-size:13.5px}
-    .row input[type=checkbox]{width:19px;height:19px}
-    select,button,input[type=text]{padding:10px;font-size:16px;min-height:42px}
-    .sec>summary{padding:13px}
+    #brand{display:none}
+    #topbar{top:.4375rem;left:.4375rem;right:.4375rem;padding:.375rem .5rem}
+    #searchWrap{max-width:none}
+    #coordBar{display:none}          /* 触屏没有鼠标读数，右下角让给轻提示 */
+    #measurePanel{top:var(--top-h);width:calc(100% - .875rem)}
+    #side{top:0;bottom:0;left:0;width:min(86vw,20rem);max-height:none;
+          border-radius:0 var(--r-lg) var(--r-lg) 0;z-index:1200;
+          transform:translateX(-102%);transition:transform .22s var(--ease);
+          padding-bottom:calc(.75rem + env(safe-area-inset-bottom,0px))}
+    #side.on{transform:translateX(0);display:flex}
+    #panelFav,#panelData{top:0;bottom:0;right:0;left:auto;width:min(90vw,22rem);
+          max-height:none;border-radius:var(--r-lg) 0 0 var(--r-lg);z-index:1200;
+          transform:translateX(102%);transition:transform .22s var(--ease);
+          padding-bottom:calc(.75rem + env(safe-area-inset-bottom,0px))}
+    #panelFav.on,#panelData.on{transform:translateX(0)}
+    #result{width:calc(100% - .875rem);max-height:62vh;
+            bottom:calc(.4375rem + env(safe-area-inset-bottom,0px))}
+    #toolbar{right:.4375rem;gap:.25rem}
+    .tb{width:2.25rem;height:2.25rem}
+    #toast{max-width:calc(100% - .875rem)}
+    .row{padding:.6875rem 0;font-size:.84375rem}
+    .row input[type=checkbox]{width:1.1875rem;height:1.1875rem}
+    select,input[type=text]{padding:.625rem;font-size:1rem;min-height:2.625rem}
+    .usel>button.usel-btn{min-height:2.625rem;font-size:1rem}
+    .sec>summary{padding:.8125rem}
+    /* 移动端点击区域放大，但工具条按钮保持紧凑 */
+    .tb{min-height:0}
   }
 </style>
 </head>
@@ -183,161 +461,317 @@
 
 <div id="loading"><div>正在加载地图数据…</div><div class="bar"><i></i></div></div>
 
+<!-- 顶部：标题 + 搜索 + 面板入口。搜索框居中，是主入口（1.1） -->
 <div class="panel" id="topbar">
-  <button id="menuBtn" title="图层与定位">☰</button>
-  <h1>UOM 适飞空域查询</h1>
-  <span class="badge" id="bdUom">适飞数据 —</span>
-  <span class="badge" id="bdDji">大疆数据 —</span>
-  <span class="badge" id="bdLayer">适飞层 —</span>
-  <span class="spacer"></span>
-  <span class="badge" id="bdPos">经纬度 —</span>
-  <span class="badge" id="bdVer">—</span>
+  <span id="brand">UOM 适飞空域查询</span>
+  <div id="searchWrap">
+    <svg class="sic" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+         stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/>
+      <path d="M20 20l-3.6-3.6"/></svg>
+    <input type="text" id="searchInput" autocomplete="off" spellcheck="false"
+           placeholder="搜索地点、行政区，或输入坐标 39.90,116.41">
+    <button id="searchClear" title="清空" hidden>
+      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor"
+           stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+    </button>
+    <div class="panel pop" id="searchResults"></div>
+  </div>
+  <!-- 原来这里有两个按钮（图层、设置），但它们打开的是同一个面板 ——
+       功能重复，只留一个入口。 -->
+  <button class="tb" id="btnLayers" title="图层与设置">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+         stroke-linejoin="round"><path d="M12 3l9 5-9 5-9-5 9-5z"/>
+      <path d="M3 13l9 5 9-5"/></svg>
+  </button>
 </div>
+
+<!-- 右侧竖工具条（1.5）：拇指可达，最常用的四个放上面 -->
+<div id="toolbar">
+  <button class="tb" id="btnLoc" title="定位我的位置">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+         stroke-linecap="round"><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2.2"/>
+      <path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg>
+  </button>
+  <button class="tb" id="btnRefresh" title="刷新当前视野（长按清空全部缓存）">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+         stroke-linecap="round" stroke-linejoin="round">
+      <path d="M20 11a8 8 0 1 0-2.3 6.3"/><path d="M20 5v6h-6"/></svg>
+  </button>
+  <button class="tb" id="btnMeasure" title="测距 / 测面">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+         stroke-linejoin="round"><path d="M3 16L16 3l5 5L8 21z"/>
+      <path d="M7 12l2 2M10 9l2 2M13 6l2 2"/></svg>
+  </button>
+  <button class="tb" id="btnFav" title="收藏夹">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+         stroke-linejoin="round"><path d="M6 3h12v18l-6-4.5L6 21z"/></svg>
+  </button>
+  <button class="tb" id="btnData" title="批量查询与导入导出">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+         stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12 3v12"/><path d="M8 11l4 4 4-4"/><path d="M4 20h16"/></svg>
+  </button>
+  <button class="tb" id="btnClear" title="清除标记与结果">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+         stroke-linecap="round" stroke-linejoin="round">
+      <path d="M4 7h16"/><path d="M9 7V4.5h6V7"/><path d="M6 7l1 13h10l1-13"/></svg>
+  </button>
+</div>
+
+<!-- 底部只留一个坐标读数，放右下角。
+     原来的状态条（5 个徽章）在左下角，正好压住缩放按钮；而且主界面上
+     堆这么多运行时状态属于信息过载 —— 那些已经移进设置面板的「状态」区。 -->
+<div id="coordBar"><span id="bdPos">经纬度 —</span></div>
+
 <div id="errbar"></div>
 <div id="backdrop"></div>
+<div id="toast"></div>
 
-<div class="panel" id="side">
+<!-- 测量面板：先选测距/测面积，再点地图画，最后点「确定」结束。
+     放在顶部居中 —— 左下是缩放、右中是工具条、右下是坐标，只有这里不打架。
+     之前把数字放在右上角的 Leaflet 控件里，正好被搜索栏盖住，
+     所以"看不出测算数字"。 -->
+<div class="panel pop" id="measurePanel">
+  <div id="measureAsk">
+    <div class="mp-title">要测什么？</div>
+    <div class="mp-kinds">
+      <button id="measureLine">测距</button>
+      <button id="measureArea">测面积</button>
+    </div>
+    <div class="mp-hint">选好后点地图加顶点，点「确定」结束，Esc 取消。</div>
+  </div>
+  <div id="measureWork" style="display:none">
+    <div class="mp-title" id="measureKindLabel">测距</div>
+    <div class="mp-big" id="measureBig">—</div>
+    <div class="mp-sub" id="measureSmall">—</div>
+    <div class="btnrow">
+      <button id="measureOk" class="primary">确定</button>
+      <button id="measureUndo">撤销一点</button>
+      <button id="measureCancel">取消</button>
+    </div>
+  </div>
+</div>
 
-  <details class="sec" open>
+<!-- 图层面板 / 设置面板：共用 #side，顶部那一个按钮打开。
+     信息做了精简：说明文字只留必要的一句，运行时状态收进「诊断」里的状态行。 -->
+<div class="panel pop" id="side">
+
+  <details class="sec" open id="secLayers">
     <summary>图层</summary>
     <label class="row"><input type="checkbox" id="lyUom" checked>
       <span class="dot" style="background:#2980b9"></span>UOM 适飞空域
       <span class="sub" id="uomZ">z0–13</span></label>
-    <input type="range" id="uomOp" min="0" max="100" value="65">
+    <input type="range" id="uomOp" min="0" max="100" value="65" title="适飞层不透明度">
     <label class="row"><input type="checkbox" id="lyDji" checked>
       <span class="dot" style="background:#c47a1c"></span>大疆禁飞/限飞区
       <span class="sub" id="djiN">—</span></label>
-    <div class="note">仅中国境内（含港澳台），境外区域不显示</div>
     <label class="row"><input type="checkbox" id="lyZn" checked>
       <span class="dot" style="background:#a33a3a"></span>ZB(SR)801 管制区
       <span class="sub">非官方</span></label>
   </details>
 
-  <details class="sec" open>
+  <details class="sec" open id="secBase">
     <summary>底图</summary>
-    <select id="baseSel"></select>
+    <!-- 原生 select 只作取值与选项的数据源，界面上由 .usel 呈现。
+         这么做是因为原生下拉列表的字体由系统绘制，CSS 管不到（1.3）。 -->
+    <select id="baseSel" class="hidden-native" tabindex="-1" aria-hidden="true"></select>
+    <div class="usel" id="baseUsel"></div>
     <div class="warnbox" id="tdtWarn"></div>
     <div class="warnbox" id="amapWarn">
-      该底图为 GCJ-02 / BD-09 坐标系，与 UOM、大疆数据（WGS84）存在
-      <b>300–600 米偏移</b>，叠加会错位。仅作参考，不要用于核对边界。
+      <span class="x" data-close-warn title="关闭">×</span>
+      该底图是 GCJ-02 / BD-09 坐标系，与数据差 <b>300–600 米</b>。点击查询的
+      坐标<b>已自动换算</b>，结论是对的；但蓝色适飞层是 WGS84 栅格，与这张
+      底图自身仍会错位，<b>不要用它核对边界</b>。
+    </div>
+    <!-- 恢复入口必须放在提示框【外面】：提示框隐藏后，里面的链接也就点不到了 -->
+    <div class="note" id="crsWarnHint" style="display:none">
+      坐标系提示已隐藏。<a href="#" id="crsWarnShow">恢复显示</a>
     </div>
   </details>
 
-  <details class="sec">
-    <summary>快速定位</summary>
-    <select id="provSel">
-      <option value="">选择省份…</option>
-      <optgroup label="华北">
-      <option value="116.41,39.90,10">北京</option>
-      <option value="117.20,39.13,10">天津</option>
-      <option value="114.50,38.05,8">河北</option>
-      <option value="112.55,37.87,8">山西</option>
-      <option value="111.75,40.84,7">内蒙古</option>
-      </optgroup>
-      <optgroup label="东北">
-      <option value="123.43,41.81,8">辽宁</option>
-      <option value="125.32,43.90,8">吉林</option>
-      <option value="126.63,45.75,7">黑龙江</option>
-      </optgroup>
-      <optgroup label="华东">
-      <option value="121.47,31.23,10">上海</option>
-      <option value="118.78,32.06,8">江苏</option>
-      <option value="120.15,30.27,8">浙江</option>
-      <option value="117.28,31.86,8">安徽</option>
-      <option value="119.30,26.08,8">福建</option>
-      <option value="115.89,28.68,8">江西</option>
-      <option value="117.00,36.65,8">山东</option>
-      </optgroup>
-      <optgroup label="华中">
-      <option value="113.65,34.76,8">河南</option>
-      <option value="114.30,30.60,8">湖北</option>
-      <option value="112.98,28.19,8">湖南</option>
-      </optgroup>
-      <optgroup label="华南">
-      <option value="113.26,23.13,8">广东</option>
-      <option value="108.32,22.82,7">广西</option>
-      <option value="110.35,20.02,8">海南</option>
-      </optgroup>
-      <optgroup label="西南">
-      <option value="106.55,29.56,8">重庆</option>
-      <option value="104.07,30.57,7">四川</option>
-      <option value="106.71,26.57,8">贵州</option>
-      <option value="102.71,25.05,7">云南</option>
-      <option value="91.13,29.65,7">西藏</option>
-      </optgroup>
-      <optgroup label="西北">
-      <option value="108.94,34.34,8">陕西</option>
-      <option value="103.82,36.06,7">甘肃</option>
-      <option value="101.78,36.62,7">青海</option>
-      <option value="106.28,38.47,8">宁夏</option>
-      <option value="87.62,43.83,6">新疆</option>
-      </optgroup>
-    </select>
+  <details class="sec" open id="secUi">
+    <summary>界面</summary>
+    <div class="fld"><label class="fl">主题</label><div class="usel" id="themeUsel"></div></div>
+    <div class="fld"><label class="fl">界面字号</label><div class="usel" id="fontUsel"></div></div>
   </details>
 
-  <details class="sec">
-    <summary>操作</summary>
-    <div class="note">点击地图任意位置查询该点空域状态</div>
+  <details class="sec" id="secSources">
+    <summary>图源与 Key</summary>
+    <div id="keyBox"></div>
     <div class="btnrow">
-      <button id="btnLoc">定位我的位置</button>
-      <button id="btnClear">清除标记</button>
+      <button id="cstToggle">自定义图源…</button>
+    </div>
+    <div id="cstBox" style="display:none">
+      <input type="text" id="cstName" placeholder="名称">
+      <input type="text" id="cstUrl" placeholder="瓦片模板，含 {z} {x} {y}">
+      <input type="text" id="cstKey" placeholder="key 参数名（可选，如 tk）">
+      <div class="btnrow">
+        <button id="cstAdd">添加</button>
+        <button id="cstClear">清空全部</button>
+      </div>
+      <div class="note">支持 <code>{s}</code> 子域、<code>{k}</code> 注入 key。</div>
     </div>
   </details>
 
-  <details class="sec">
+  <details class="sec" id="secDiag">
     <summary>诊断</summary>
+    <div class="statusrow">
+      <span class="badge" id="bdUom">适飞数据 —</span>
+      <span class="badge" id="bdDji">大疆数据 —</span>
+      <span class="badge" id="bdLayer">适飞层 —</span>
+      <span class="badge" id="bdVer">—</span>
+    </div>
     <div class="btnrow">
+      <button id="diagView">运行自检</button>
       <button id="diagCopy">复制诊断信息</button>
     </div>
-    <div class="btnrow">
-      <button id="diagView">对比当前视野</button>
-    </div>
-    <textarea id="diagOut" readonly rows="7"
-      style="margin-top:7px;display:none;width:100%;font-size:10px;
+    <textarea id="diagOut" readonly rows="9"
+      style="margin-top:.4375rem;display:none;width:100%;font-size:.625rem;
              font-family:ui-monospace,Menlo,Consolas,monospace;
-             border:1px solid var(--line);border-radius:4px;padding:6px;
+             border:1px solid var(--line);border-radius:var(--r-sm);padding:.375rem;
              resize:vertical"></textarea>
-    <div class="note">
-      线上站点没有日志服务，点上面按钮把运行数据复制出来发给开发者，
-      就能定位卡顿/加载失败的原因。不含任何 key 内容。
-    </div>
+    <div class="note">自检在浏览器里跑，线上也能用。</div>
   </details>
 
-  <details class="sec">
-    <summary>API Key</summary>
-    <div id="keyBox"></div>
-    <div class="note">
-      仅保存在本机浏览器，只用于拼进对应图源的地址。留空则该图源不可用。
-    </div>
-  </details>
-
-  <details class="sec">
-    <summary>自定义图源</summary>
-    <input type="text" id="cstName" placeholder="名称">
-    <input type="text" id="cstUrl" placeholder="瓦片地址模板，含 {z} {x} {y}">
-    <input type="text" id="cstKey" placeholder="key 参数名（可选，如 tk）">
-    <div class="btnrow">
-      <button id="cstAdd">添加</button>
-      <button id="cstClear">清空全部</button>
+  <details class="sec" id="secAbout">
+    <summary>关于</summary>
+    <div class="note" style="margin-top:0">
+      <b>数据</b>：适飞空域栅格来自第三方归档（<span id="aboutUomDate">—</span>）；
+      大疆禁飞/限飞来自 DJI FlySafe 公开数据（<span id="aboutDjiDate">—</span>）。
+      均为非实时。
     </div>
     <div class="note">
-      支持 <code>{s}</code> 子域、<code>{k}</code> 注入 key。坐标系未知，默认按无偏移处理。
+      地图上的空白是<b>没有数据</b>，既不是禁飞也不是适飞 —— 适飞空域只覆盖
+      全国约三成面积。
+    </div>
+    <div class="disclaim">
+      <b>免责声明</b>：个人非官方项目，<b>不作为飞行依据</b>。飞行前请以 UOM
+      官方平台（uom.caac.gov.cn）及当地空管部门的最新信息为准。
     </div>
   </details>
 
 </div>
 
-<div class="panel" id="result">
-  <button class="close" id="resClose">×</button>
-  <h2>查询结果</h2>
-  <div class="coord" id="resCoord">—</div>
-  <div class="verdict v-unk" id="resVerdict">
-    <div class="big">—</div><div class="small">—</div>
+<!-- 省市列表：不再单独做"快速定位"下拉，改为隐藏的原生 select 作为数据源，
+     由顶部搜索框统一检索（1.1 + 1.3）。 -->
+<select id="provSel" class="hidden-native" tabindex="-1" aria-hidden="true">
+  <option value="">选择省份…</option>
+  <optgroup label="华北">
+  <option value="116.41,39.90,10">北京</option>
+  <option value="117.20,39.13,10">天津</option>
+  <option value="114.50,38.05,8">河北</option>
+  <option value="112.55,37.87,8">山西</option>
+  <option value="111.75,40.84,7">内蒙古</option>
+  </optgroup>
+  <optgroup label="东北">
+  <option value="123.43,41.81,8">辽宁</option>
+  <option value="125.32,43.90,8">吉林</option>
+  <option value="126.63,45.75,7">黑龙江</option>
+  </optgroup>
+  <optgroup label="华东">
+  <option value="121.47,31.23,10">上海</option>
+  <option value="118.78,32.06,8">江苏</option>
+  <option value="120.15,30.27,8">浙江</option>
+  <option value="117.28,31.86,8">安徽</option>
+  <option value="119.30,26.08,8">福建</option>
+  <option value="115.89,28.68,8">江西</option>
+  <option value="117.00,36.65,8">山东</option>
+  </optgroup>
+  <optgroup label="华中">
+  <option value="113.65,34.76,8">河南</option>
+  <option value="114.30,30.60,8">湖北</option>
+  <option value="112.98,28.19,8">湖南</option>
+  </optgroup>
+  <optgroup label="华南">
+  <option value="113.26,23.13,8">广东</option>
+  <option value="108.32,22.82,7">广西</option>
+  <option value="110.35,20.02,8">海南</option>
+  </optgroup>
+  <optgroup label="西南">
+  <option value="106.55,29.56,8">重庆</option>
+  <option value="104.07,30.57,7">四川</option>
+  <option value="106.71,26.57,8">贵州</option>
+  <option value="102.71,25.05,7">云南</option>
+  <option value="91.13,29.65,7">西藏</option>
+  </optgroup>
+  <optgroup label="西北">
+  <option value="108.94,34.34,8">陕西</option>
+  <option value="103.82,36.06,7">甘肃</option>
+  <option value="101.78,36.62,7">青海</option>
+  <option value="106.28,38.47,8">宁夏</option>
+  <option value="87.62,43.83,6">新疆</option>
+  </optgroup>
+</select>
+
+<!-- 收藏夹面板 -->
+<div class="panel pop" id="panelFav">
+  <div class="phead">
+    <b>收藏夹</b>
+    <button class="close" id="favClose" title="关闭">×</button>
   </div>
-  <div id="resRows"></div>
-  <div class="disclaim">
-    <b>免责声明</b>：本工具为个人非官方项目，数据来自第三方归档，<b>不作为飞行依据</b>。
-    实际飞行前请以 UOM 官方平台（uom.caac.gov.cn）及当地空管部门发布的最新信息为准。
+  <div id="favList"></div>
+  <div class="btnrow">
+    <button id="favExport">导出 GeoJSON</button>
+  </div>
+  <div class="note">
+    收藏点保存在本机浏览器。点击条目定位并查询；点名称可改名。
+  </div>
+</div>
+
+<!-- 数据面板：批量查询 + 导入导出 -->
+<div class="panel pop" id="panelData">
+  <div class="phead">
+    <b>批量查询 / 导入导出</b>
+    <button class="close" id="dataClose" title="关闭">×</button>
+  </div>
+  <div class="fld">
+    <label class="fl">批量点位（每行一条）</label>
+    <textarea id="bulkIn" rows="6" placeholder="名称,纬度,经度
+天安门,39.9087,116.3975
+39.9087 116.3975"></textarea>
+    <div class="btnrow">
+      <button id="bulkRun" class="primary">开始查询</button>
+      <button id="bulkClear">清空</button>
+    </div>
+  </div>
+  <div id="bulkOut"></div>
+  <div class="fld">
+    <label class="fl">导入</label>
+    <input type="file" id="ioImport" accept=".geojson,.json,.kml" style="width:100%">
+    <div class="note">支持 GeoJSON 与 KML。点要素可直接点击查询；线/面仅显示。</div>
+  </div>
+  <div class="fld">
+    <label class="fl">导出</label>
+    <div class="btnrow">
+      <button id="ioExportGeo">GeoJSON</button>
+      <button id="ioExportKml">KML</button>
+    </div>
+    <div class="note">导出收藏点、测量要素、批量查询结果与导入的要素。</div>
+  </div>
+</div>
+
+<!-- 结果：底部抽屉（1.6）。拖拽手柄可收起为一行。
+     信息顺序按"先结论、后细节"排：大字结论 → 一行命中情况 → 坐标 → 操作，
+     瓦片/像素/坐标系换算这类技术信息收进「详情」，默认不占视线。 -->
+<div class="panel pop" id="result">
+  <div id="resGrip" title="点击展开/收起"></div>
+  <button class="close" id="resClose" title="关闭">×</button>
+  <div id="resBody">
+    <div class="verdict v-unk" id="resVerdict">
+      <div class="big">—</div><div class="small">—</div>
+    </div>
+    <div id="resRows"></div>
+    <div class="coord" id="resCoord">—</div>
+    <div class="btnrow">
+      <button id="resCopy">复制坐标</button>
+      <button id="resFav">收藏</button>
+      <button id="resRuler">测距</button>
+    </div>
+    <details class="sec" id="resDetail">
+      <summary>详情</summary>
+      <div id="resDetailRows"></div>
+    </details>
+    <div class="note" style="margin-bottom:0">非官方数据，不作为飞行依据。</div>
   </div>
 </div>
 
@@ -358,7 +792,7 @@
    alpha 严格为 0 或 255，无抗锯齿中间值，因此判定无歧义。
    瓦片缺失 ⇒ 该区域无适飞空域。 */
 /* 构建标识：用来确认浏览器实际加载的是哪一版，排查缓存问题 */
-const BUILD = 'v16.5';
+const BUILD = 'v17.0';
 
 /* 加载层兜底：放在脚本最前面注册。
    之前把它放在末尾，一旦中间某处抛错就永远不执行，页面会卡死在
@@ -404,6 +838,53 @@ window.addEventListener('unhandledrejection', e => {
   const r = e.reason;
   showError('未处理的异步异常', (r && (r.message || r.toString())) || String(r));
 });
+
+/* 轻提示。msg 是主行，o = { level:'ok'|'err'|'warn', detail, action:{label,fn}, ms }
+   需要用户看清楚或要提供"重试/查看指引"这类操作时，用 o.action。 */
+function escapeHtml(s){
+  return String(s).replace(/[&<>"']/g, c =>
+    ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
+}
+
+function toast(msg, o){
+  o = o || {};
+  const host = document.getElementById('toast');
+  if (!host){ return { close: function(){} }; }   // 极端情况下退化为静默
+
+  const item = document.createElement('div');
+  item.className = 'tst' + (o.level ? ' ' + o.level : '');
+
+  const body = document.createElement('div');
+  body.innerHTML = '<div class="tst-title">' + escapeHtml(msg) + '</div>' +
+    (o.detail ? '<div class="tst-detail">' + escapeHtml(o.detail) + '</div>' : '');
+  item.appendChild(body);
+
+  let closed = false;
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    item.classList.add('out');
+    setTimeout(() => { if (item.parentNode) item.parentNode.removeChild(item); }, 170);
+  };
+
+  if (o.action){
+    const row = document.createElement('div');
+    row.className = 'tst-act';
+    const btn = document.createElement('button');
+    btn.textContent = o.action.label;
+    btn.onclick = () => { close(); o.action.fn(); };
+    row.appendChild(btn);
+    item.appendChild(row);
+  }
+
+  host.appendChild(item);
+  /* 只保留最近 3 条，避免批量操作时刷屏盖住地图 */
+  while (host.children.length > 3) host.removeChild(host.firstChild);
+
+  const ms = o.ms != null ? o.ms : (o.action ? 9000 : 3200);
+  if (ms > 0) setTimeout(close, ms);
+  return { close: close };
+}
 
 /* UOM 适飞层加载计数：直接显示在顶栏，能立刻看出瓦片到底有没有在加载 */
 let uomTiles = 0, uomTileErrs = 0, uomNoData = 0, uomStatTimer = null;
@@ -762,6 +1243,9 @@ const map = L.map('map', {
   preferCanvas: true,         // 矢量图层统一走 canvas，省掉 SVG DOM 开销
   markerZoomAnimation: false,
   inertia: true,
+  /* 关掉默认的缩放控件，改在左下角自己加一个（1.8）。
+     默认在左上角，正好被顶部搜索栏整块盖住 —— 等于没有，还白白占位。 */
+  zoomControl: false,
   maxZoom: 18,
   minZoom: 3,
   attributionControl: false
@@ -902,6 +1386,10 @@ function checkBaseStatus(url, done){
 }
 
 let baseLayer = null;
+/* 底图的自定义下拉实例。用 let 提前声明（而不是在后面 const）：
+   buildBaseOptions() 里要引用它，而 const 处于 TDZ 时连 typeof 都会抛错。
+   实际赋值在 UI 那一节，调用顺序上一定先赋值后使用。 */
+let basemapUi = null;
 
 /* 底图选择下拉由注册表生成，避免 HTML 与 JS 两处维护同一份清单 */
 function buildBaseOptions(){
@@ -924,6 +1412,8 @@ function buildBaseOptions(){
     sel.appendChild(opt);
   }
   if (prev) sel.value = prev;
+  /* 同步到自定义下拉（界面上显示的是它，原生 select 只是数据源） */
+  if (basemapUi) basemapUi.refresh();
 }
 
 function currentBaseCfg(kind){
@@ -950,8 +1440,7 @@ function setBase(kind){
   }
   warn.classList.toggle('on', !!missingKey);
   /* GCJ-02 / BD-09 都提示偏移，不管具体是哪家 */
-  document.getElementById('amapWarn').classList.toggle(
-    'on', cfg.crs === 'GCJ-02' || cfg.crs === 'BD-09');
+  syncCrsWarn();
   if (kind === 'none') return;
   /* 缺 key 就不要创建图层：否则会带着空参数去请求，
      换来一堆注定失败的响应（天地图无 tk 会被 WAF 返回 418）。 */
@@ -985,6 +1474,9 @@ let workerSeq = 0;
 const workerPending = new Map();
 let workerReady = false;
 let workerFailed = false;
+/* Worker 上报的取数统计（每 300ms 一次），用于判断"慢在哪"：
+   合并后的 HTTP 请求数、平均/最长耗时。诊断面板会展示。 */
+let workerStat = null;
 
 try {
   tileWorker = new Worker('tile-worker.js');
@@ -1005,6 +1497,7 @@ try {
     }
     /* Worker 侧统计：定位"取数慢在哪"（含 no-store 是否已关闭） */
     if (m && m.stat){
+      workerStat = m;
       report('WORKER_STAT', m);
       return;
     }
@@ -1114,6 +1607,43 @@ function workerGetTile(z, x, y){
     }
     rec.resolvers.push({ resolve: resolve, reject: reject });
     if (!batchTimer) batchTimer = setTimeout(batchFlush, 0);
+  });
+}
+
+/* 诊断用：一次请求一批【指定】瓦片，绕开攒批逻辑（攒批要等同轮结束，
+   诊断时想立刻拿到确定的一批）。返回与入参顺序一致的 data 数组；
+   单块失败不整体失败，把错误收在 errors 里 —— 否则一块坏瓦片会让整个
+   自检看起来失败，掩盖真实结论。 */
+function workerGetTileBatch(tiles){
+  return new Promise((resolve, reject) => {
+    if (!tileWorker || workerFailed) return reject(new Error('Worker 不可用'));
+    const id = ++workerSeq;
+    const out = new Array(tiles.length).fill(null);
+    const errors = [];
+    let left = tiles.length;
+    const resolvers = tiles.map((t, i) => [{
+      resolve: (data) => {
+        out[i] = data;
+        if (--left === 0) resolve({ data: out, errors: errors });
+      },
+      reject: (e) => {
+        errors.push({ tile: t.join('/'), msg: (e && e.message) || String(e) });
+        if (--left === 0) resolve({ data: out, errors: errors });
+      }
+    }]);
+    inflightBatches.set(id, resolvers);
+    /* 和 batchFlush 一样的超时保护：消息丢了不能永远挂着 */
+    setTimeout(() => {
+      if (!inflightBatches.has(id)) return;
+      inflightBatches.delete(id);
+      reject(new Error('批量取数超时'));
+    }, 20000);
+    try {
+      tileWorker.postMessage({ batch: true, id, tiles: tiles });
+    } catch(e){
+      inflightBatches.delete(id);
+      reject(new Error('Worker 不可用'));
+    }
   });
 }
 
@@ -1623,98 +2153,667 @@ async function queryUom(lat, lon){
   };
 }
 
+/* ---------------- 坐标系换算 ----------------
+   为什么需要这一节：
+
+   数据（UOM 栅格、大疆、ZB(SR)801）都是 WGS84 / CGCS2000，而高德、腾讯的
+   底图瓦片是 GCJ-02（国测局加密坐标），百度是 BD-09。同一地点两套坐标相差
+   300~600 米。
+
+   之前的做法是"照原样拿点击坐标去查"，于是：在高德底图上点一个点，判定用的
+   其实是偏了 300~600 米的另一个位置 —— 边界附近足以得出相反结论。这个缺陷
+   界面上完全看不出来（点还在鼠标位置，只是判定点悄悄偏了），所以必须修。
+
+   修法：判定一律用 WGS84，只在"把标记画到底图上"这一步换到底图的坐标系。
+
+   注意一个改不掉的地方：UOM 是 WGS84 栅格，直接铺在 Leaflet 的 WGS84 瓦片
+   网格里。底图换成高德后，两套瓦片网格本身错位，所以**蓝色适飞层相对高德
+   地图上的道路/注记仍会偏 300~600 米** —— 这是栅格叠加的固有限制，除非重采样
+   瓦片。能在意边界的场合请用天地图 / Esri / OSM 这些 WGS84 底图。 */
+const GCJ_A  = 6378245.0;                   // 克拉索夫斯基椭球长半轴
+const GCJ_EE = 0.00669342162296594323;      // 第一偏心率平方
+
+/* GCJ-02 只在国境范围内生效。用矩形近似，边界附近会有一次跳变 ——
+   这也是各家实现的通行做法（真正的边界是分省判定的加密区，公开资料里没有）。 */
+function outOfChina(lat, lon){
+  return !(lon > 73.66 && lon < 135.05 && lat > 3.86 && lat < 53.55);
+}
+
+function gcjTransformLat(x, y){
+  let ret = -100.0 + 2.0*x + 3.0*y + 0.2*y*y + 0.1*x*y + 0.2*Math.sqrt(Math.abs(x));
+  ret += (20.0*Math.sin(6.0*x*Math.PI) + 20.0*Math.sin(2.0*x*Math.PI)) * 2.0/3.0;
+  ret += (20.0*Math.sin(y*Math.PI) + 40.0*Math.sin(y/3.0*Math.PI)) * 2.0/3.0;
+  ret += (160.0*Math.sin(y/12.0*Math.PI) + 320.0*Math.sin(y*Math.PI/30.0)) * 2.0/3.0;
+  return ret;
+}
+function gcjTransformLon(x, y){
+  let ret = 300.0 + x + 2.0*y + 0.1*x*x + 0.1*x*y + 0.1*Math.sqrt(Math.abs(x));
+  ret += (20.0*Math.sin(6.0*x*Math.PI) + 20.0*Math.sin(2.0*x*Math.PI)) * 2.0/3.0;
+  ret += (20.0*Math.sin(x*Math.PI) + 40.0*Math.sin(x/3.0*Math.PI)) * 2.0/3.0;
+  ret += (150.0*Math.sin(x/12.0*Math.PI) + 300.0*Math.sin(x/30.0*Math.PI)) * 2.0/3.0;
+  return ret;
+}
+
+/* WGS84 -> GCJ-02 */
+function wgs84ToGcj02(lat, lon){
+  if (outOfChina(lat, lon)) return [lat, lon];
+  let dLat = gcjTransformLat(lon - 105.0, lat - 35.0);
+  let dLon = gcjTransformLon(lon - 105.0, lat - 35.0);
+  const radLat = lat / 180.0 * Math.PI;
+  let magic = Math.sin(radLat);
+  magic = 1 - GCJ_EE * magic * magic;
+  const sqrtMagic = Math.sqrt(magic);
+  dLat = (dLat * 180.0) / ((GCJ_A * (1 - GCJ_EE)) / (magic * sqrtMagic) * Math.PI);
+  dLon = (dLon * 180.0) / (GCJ_A / sqrtMagic * Math.cos(radLat) * Math.PI);
+  return [lat + dLat, lon + dLon];
+}
+
+/* GCJ-02 -> WGS84
+   这个方向没有解析解，用迭代反解：把结果再正算一次，按差值修正，重复几次。
+   比常见的"减去固定偏移量"近似准得多（那种做法残差能到米级）。 */
+function gcj02ToWgs84(lat, lon){
+  if (outOfChina(lat, lon)) return [lat, lon];
+  let wLat = lat, wLon = lon;
+  for (let i = 0; i < 4; i++){
+    const g = wgs84ToGcj02(wLat, wLon);
+    wLat += lat - g[0];
+    wLon += lon - g[1];
+  }
+  return [wLat, wLon];
+}
+
+const BD_FACTOR = Math.PI * 3000.0 / 180.0;
+
+function gcj02ToBd09(lat, lon){
+  const z = Math.sqrt(lon*lon + lat*lat) + 0.00002 * Math.sin(lat * BD_FACTOR);
+  const theta = Math.atan2(lat, lon) + 0.000003 * Math.cos(lon * BD_FACTOR);
+  return [z * Math.sin(theta) + 0.006, z * Math.cos(theta) + 0.0065];
+}
+function bd09ToGcj02(lat, lon){
+  const x = lon - 0.0065, y = lat - 0.006;
+  const z = Math.sqrt(x*x + y*y) - 0.00002 * Math.sin(y * BD_FACTOR);
+  const theta = Math.atan2(y, x) - 0.000003 * Math.cos(x * BD_FACTOR);
+  return [z * Math.sin(theta), z * Math.cos(theta)];
+}
+
+function wgs84ToBd09(lat, lon){
+  const g = wgs84ToGcj02(lat, lon);
+  return gcj02ToBd09(g[0], g[1]);
+}
+function bd09ToWgs84(lat, lon){
+  const g = bd09ToGcj02(lat, lon);
+  return gcj02ToWgs84(g[0], g[1]);
+}
+
+/* 当前底图的 key。集中成一处，B 阶段把原生 select 换成自定义下拉时只改这里。
+   注意 currentBaseCfg(kind) 必须有参数（内部直接调 kind.indexOf），
+   少传一个参数会抛 TypeError —— 这个坑我在单测里踩过一次。 */
+function currentBaseKind(){
+  const sel = document.getElementById('baseSel');
+  return sel ? sel.value : 'none';
+}
+
+/* 当前底图的坐标系。取不到底图时按 WGS84 处理（无偏移是最安全的默认值）。 */
+function currentBaseCrs(){
+  const cfg = currentBaseCfg(currentBaseKind());
+  return (cfg && cfg.crs && cfg.crs !== '-') ? cfg.crs : 'WGS84';
+}
+
+/* 底图坐标 -> WGS84（判定用） */
+function mapToWgs(lat, lon){
+  const crs = currentBaseCrs();
+  if (crs === 'GCJ-02') return gcj02ToWgs84(lat, lon);
+  if (crs === 'BD-09')  return bd09ToWgs84(lat, lon);
+  return [lat, lon];
+}
+
+/* WGS84 -> 底图坐标（只用于把标记画到底图上正确的位置） */
+function wgsToMap(lat, lon){
+  const crs = currentBaseCrs();
+  if (crs === 'GCJ-02') return wgs84ToGcj02(lat, lon);
+  if (crs === 'BD-09')  return wgs84ToBd09(lat, lon);
+  return [lat, lon];
+}
+
 /* ---------------- 点击查询 ---------------- */
 let marker = null;
+/* 最近一次查询结果。复制坐标/收藏/以此测距都要用它 —— 之前这些操作
+   只能靠读 DOM 反推坐标，容易和实际判定值不一致。 */
+let lastResult = null;
 
+/* 判定某点的空域状态。
+   纯函数：只读数据、只返回结构化结果，不碰 DOM。
+   拆出来的原因有两个 ——
+     1) 批量点位查询要复用同一套判定，不能靠"先改 DOM 再读回来"；
+     2) 判定优先级是安全相关的，必须能被测试脚本单独验证。埋在渲染代码里的话，
+        每改一次界面都有悄悄走样的风险，而界面上看不出差别。
+   坐标系约定：传进来的 lat/lon 一律是 WGS84 —— 与 UOM / 大疆数据同系。
+   调用方负责在底图是 GCJ-02 / BD-09 时先做转换。 */
+async function evaluatePoint(lat, lon){
+  const res = {
+    lat: lat, lon: lon,
+    uom: { state:'unknown', why:'未查询' },
+    dji: [],
+    djiReady: !!djiJudge,
+    inZone: false,
+    verdict: { cls:'v-unk', big:'无法判定', small:'' }
+  };
+
+  res.uom = await queryUom(lat, lon);
+
+  /* 判定用全量数据（djiJudge），不是当前显示的分级数据 ——
+     低缩放下显示的是精简子集，拿它判定会漏判小区域。 */
+  if (djiJudge){
+    for (const f of djiJudge){
+      if (pointInFeature([lon, lat], f.geometry)) res.dji.push(f.properties);
+    }
+  }
+
+  if (zoneData){
+    for (const f of zoneData.features){
+      if (pointInFeature([lon, lat], f.geometry)){ res.inZone = true; break; }
+    }
+  }
+
+  res.verdict = decideVerdict(res);
+  return res;
+}
+
+/* 结论的优先级【绝对不能改】：
+     ZB(SR)801 管制区 > 大疆禁飞区 > UOM 适飞 > 非适飞 > 无法判定
+   参考实现见 verify_logic.py，改这里要同步改它。 */
+function decideVerdict(res){
+  if (res.inZone){
+    return { cls:'v-no', big:'管制空域',
+      small:'该点位于 ZB(SR)801 标注范围内（依据 NOTAM C0903/26 转述，非官方边界）' };
+  }
+  if (res.dji.some(p => p.type === 'restricted')){
+    return { cls:'v-no', big:'禁飞区', small:'该点落在大疆禁飞区内' };
+  }
+  if (res.uom.state === 'yes'){
+    return { cls:'v-ok', big:'适飞空域',
+      small:'UOM 数据显示该点在适飞空域内' +
+            (res.dji.length ? '，但命中大疆警示/限飞区，请留意' : '') };
+  }
+  if (res.uom.state === 'no'){
+    return { cls:'v-no', big:'非适飞空域', small:'该点不在 UOM 适飞空域内' };
+  }
+  return { cls:'v-unk', big:'无法判定', small:'数据加载失败' };
+}
+
+/* 把判定结果渲染进结果卡片。只做展示，不做判定。 */
+/* 把判定结果渲染进结果卡片。信息分两层：
+     主区 —— 只放"是否适飞"和"命中了什么"，越少越好；
+     详情 —— 瓦片号、像素、坐标系换算、大疆区域明细，默认折叠。
+   顺手把 ✅❌⚠️ 这类表情去掉了：它们是"AI 生成界面"的另一个明显特征，
+   而且不同平台的 emoji 字形差异很大，观感不可控。 */
+function renderResult(res){
+  lastResult = res;
+  const R = [];        // 主区
+  const D = [];        // 详情
+
+  /* 主区【只放命中的东西】：
+       大字结论已经说明了"是否适飞"，再列一行"UOM 适飞空域：是/否"是重复的；
+       "大疆未命中""801 不在范围"属于让人放心的信息，不是答案 —— 都归详情。
+     这样如果什么都没命中，结果卡上就只有结论 + 坐标 + 按钮。 */
+  D.push(['UOM 适飞空域', res.uom.state === 'yes' ? '是'
+      : (res.uom.state === 'no' ? '否' : '未知（取数失败）')]);
+
+  /* 大疆：数据里有 level_name / zone_type / height（限高）/ radius / 生效时段（2.10）。 */
+  if (!res.djiReady){
+    D.push(['大疆数据', '加载中…']);
+  } else if (!res.dji.length){
+    D.push(['大疆禁飞/限飞', '未命中']);
+  } else {
+    R.push(['大疆禁飞/限飞', res.dji.map(p =>
+      '<b>' + escapeHtml(DJI_LABEL[p.type] || p.type) + '</b>' +
+      (p.name ? '　' + escapeHtml(p.name) : '') +
+      (p.height ? '　限高 ' + p.height + ' m' : '')).join('<br>')]);
+    D.push(['大疆区域明细', res.dji.map(p => [
+      p.level_name ? escapeHtml(p.level_name) : '',
+      p.zone_type ? escapeHtml(p.zone_type) : '',
+      p.radius ? '半径约 ' + Math.round(p.radius) + ' m' : '',
+      p.country ? escapeHtml(p.country) : '',
+      djiActiveText(p)
+    ].filter(Boolean).join('　·　')).join('<br>')]);
+  }
+
+  if (res.inZone) R.push(['ZB(SR)801 管制区', '在范围内（非官方标注）']);
+  else D.push(['ZB(SR)801 管制区', '不在范围']);
+
+  if (res.uom.tile){
+    D.push(['z13 瓦片', res.uom.tile + (res.uom.pixel ? '　像素 ' + res.uom.pixel : '')]);
+  }
+  /* 底图是 GCJ-02 / BD-09 时，标记画在底图坐标系上、判定用 WGS84。
+     这属于"技术细节"，放详情里，免得主区让人以为坐标算错了。 */
+  const crs = currentBaseCrs();
+  if (crs !== 'WGS84'){
+    const mp = wgsToMap(res.lat, res.lon);
+    D.push(['底图标记位置', mp[0].toFixed(6) + ', ' + mp[1].toFixed(6) + '（' + crs + '）']);
+  }
+
+  const v = document.getElementById('resVerdict');
+  v.className = 'verdict ' + res.verdict.cls;
+  v.innerHTML = '<div class="big">' + res.verdict.big + '</div>' +
+                '<div class="small">' + res.verdict.small + '</div>';
+
+  const rowsOf = (list) => list.map(([k, val]) =>
+    '<div class="krow"><span class="k">' + k + '</span><span class="v">' + val + '</span></div>')
+    .join('');
+  document.getElementById('resRows').innerHTML = rowsOf(R);
+  document.getElementById('resDetailRows').innerHTML = rowsOf(D);
+  document.getElementById('resDetail').open = false;   // 每次查询都从收起开始
+}
+
+/* 生效时段：begin_at / end_at 为 0 表示无期限 */
+function djiActiveText(p){
+  const now = Date.now() / 1000;
+  const b = +p.begin_at || 0, e = +p.end_at || 0;
+  if (!b && !e) return '';
+  if (b && now < b) return '尚未生效';
+  if (e && now > e) return '已失效';
+  return '生效至 ' + (e ? new Date(e * 1000).toLocaleDateString() : '另行通知');
+}
+
+/* 查询某点。lat/lon 一律为 WGS84 —— 与 UOM / 大疆数据同系。
+   底图是 GCJ-02 / BD-09 时，标记要画在换算后的位置，否则标记会偏离底图上
+   那个实际地点（地图上看着"点歪了"）。 */
 async function queryAt(lat, lon){
   document.getElementById('resCoord').textContent =
     `${lat.toFixed(6)}, ${lon.toFixed(6)}`;
 
+  const mp = wgsToMap(lat, lon);
   if (marker) map.removeLayer(marker);
-  marker = L.circleMarker([lat, lon], {
+  marker = L.circleMarker(mp, {
     radius:7, color:'#fff', weight:2, fillColor:'#2c5f5a', fillOpacity:1
   }).addTo(map);
 
-  const R = [];
-  let verdict = { cls:'v-unk', big:'查询中…', small:'' };
   document.getElementById('resVerdict').className = 'verdict v-unk';
   document.getElementById('resVerdict').innerHTML =
     '<div class="big">查询中…</div><div class="small">正在读取本地瓦片</div>';
   document.getElementById('resRows').innerHTML = '';
-  document.getElementById('result').classList.add('on');
+  const sheet = document.getElementById('result');
+  sheet.classList.add('on');
+  sheet.classList.remove('min');       // 上次若被收起成一条，这里展开
 
-  const uom = await queryUom(lat, lon);
-  R.push(['UOM 适飞空域', uom.state === 'yes' ? '✅ 是' : (uom.state === 'no' ? '❌ 否' : '— 未知')]);
-  if (uom.tile) R.push(['z13 瓦片', uom.tile + (uom.pixel ? ` 像素 ${uom.pixel}` : '')]);
-
-  /* 大疆 */
-  /* 判定用全量数据（djiJudge），不是当前显示的分级数据 ——
-     低缩放下显示的是精简子集，拿它判定会漏判小区域。 */
-  let djiHits = [], djiJudgeReady = !!djiJudge;
-  if (djiJudge){
-    for (const f of djiJudge){
-      if (pointInFeature([lon, lat], f.geometry)) djiHits.push(f.properties);
-    }
-  }
-  R.push(['大疆禁飞/限飞', !djiJudgeReady
-    ? '数据加载中…'
-    : (djiHits.length
-        ? djiHits.map(p => `${DJI_LABEL[p.type] || p.type}${p.name ? '（' + p.name + '）' : ''}`).join('<br>')
-        : '未命中')]);
-
-  /* ZB(SR)801 */
-  let inZone = false;
-  if (zoneData) for (const f of zoneData.features) if (pointInFeature([lon, lat], f.geometry)) inZone = true;
-  R.push(['ZB(SR)801 管制区', inZone ? '⚠️ 在范围内（非官方标注）' : '不在范围']);
-
-  /* 结论 */
-  if (inZone){
-    verdict = { cls:'v-no', big:'管制空域',
-      small:'该点位于 ZB(SR)801 标注范围内（依据 NOTAM C0903/26 转述，非官方边界）' };
-  } else if (djiHits.some(p => p.type === 'restricted')){
-    verdict = { cls:'v-no', big:'禁飞区', small:'该点落在大疆禁飞区内' };
-  } else if (uom.state === 'yes'){
-    verdict = { cls:'v-ok', big:'适飞空域',
-      small:'UOM 数据显示该点在适飞空域内' + (djiHits.length ? '，但命中大疆警示/限飞区，请留意' : '') };
-  } else if (uom.state === 'no'){
-    verdict = { cls:'v-no', big:'非适飞空域',
-      small:'该点不在 UOM 适飞空域内' };
-  } else {
-    verdict = { cls:'v-unk', big:'无法判定', small:'数据加载失败' };
-  }
-
-  const v = document.getElementById('resVerdict');
-  v.className = 'verdict ' + verdict.cls;
-  v.innerHTML = `<div class="big">${verdict.big}</div><div class="small">${verdict.small}</div>`;
-  document.getElementById('resRows').innerHTML = R
-    .map(([k, val]) => `<div class="krow"><span class="k">${k}</span><span class="v">${val}</span></div>`)
-    .join('');
+  renderResult(await evaluatePoint(lat, lon));
 }
 
-map.on('click', e => queryAt(e.latlng.lat, e.latlng.lng));
+/* 点击取的是【底图坐标系】下的坐标。必须换成 WGS84 再判定 ——
+   否则在高德/腾讯底图上，判定的是偏 300~600 米的另一个点。
+   测量模式下点击改为加顶点（测量就在底图上量，不做坐标系换算）。 */
+map.on('click', e => {
+  if (measureMode){ measureAdd(e.latlng); return; }
+  const w = mapToWgs(e.latlng.lat, e.latlng.lng);
+  queryAt(w[0], w[1]);
+});
 map.on('mousemove', e => {
+  /* 读数也统一成 WGS84：这个值用户会拿去填表、报备，必须是和数据同系的那个数，
+     不能是底图的 GCJ-02 值。 */
+  const w = mapToWgs(e.latlng.lat, e.latlng.lng);
   document.getElementById('bdPos').textContent =
-    `${e.latlng.lat.toFixed(5)}, ${e.latlng.lng.toFixed(5)}`;
+    `${w[0].toFixed(5)}, ${w[1].toFixed(5)}`;
 });
 
-/* ---------------- UI 事件 ---------------- */
+/* ---------------- UI 事件：面板开合 ---------------- */
 
-/* 手机端抽屉式侧栏 */
-const sideEl = document.getElementById('side');
-const backdropEl = document.getElementById('backdrop');
 const isMobile = () => window.matchMedia('(max-width:760px)').matches;
-const setDrawer = (open) => {
-  sideEl.classList.toggle('on', open);
-  backdropEl.classList.toggle('on', open);
-};
-document.getElementById('menuBtn').onclick = () => setDrawer(!sideEl.classList.contains('on'));
-backdropEl.onclick = () => setDrawer(false);
-window.addEventListener('keydown', e => { if (e.key === 'Escape') setDrawer(false); });
 
-document.getElementById('baseSel').onchange = e => {
-  setBase(e.target.value);
-  if (isMobile()) setDrawer(false);
-};
+/* 浮层面板开合。
+   一次只开一个面板：桌面端是浮在角落的卡片（不挡地图，不加遮罩），
+   移动端是从边缘滑入的抽屉（加遮罩，点遮罩关闭）。同一套 DOM。
+   面板元素在 openPanel 里按 id 取，所以不留 sideEl 这类常驻引用。 */
+const backdropEl = document.getElementById('backdrop');
+const PANELS = ['side', 'panelFav', 'panelData'];
+let openPanelId = null, openPanelBtn = null;
+
+function setBtnOn(id, on){
+  const b = document.getElementById(id);
+  if (b) b.classList.toggle('on', on);
+}
+
+function closePanels(){
+  for (const id of PANELS){
+    const el = document.getElementById(id);
+    if (el) el.classList.remove('on');
+  }
+  backdropEl.classList.remove('on');
+  setBtnOn('btnLayers', false);
+  setBtnOn('btnFav', false);
+  setBtnOn('btnData', false);
+  openPanelId = null;
+  openPanelBtn = null;
+}
+
+/* panelId 要开的面板；btnId 触发按钮（用于高亮与二次点击收起）；
+   secId 可选，打开后把这个折叠区展开并滚到可见位置。 */
+function openPanel(panelId, btnId, secId){
+  const el = document.getElementById(panelId);
+  if (!el) return;
+
+  /* 同一个按钮再点一次 = 收起。
+     这里不能再加 "&& !secId" 的条件 —— 加了之后，凡是带 secId 的按钮
+     （图层、设置）就永远关不掉。浏览器自检里正是这条露了马脚。 */
+  if (openPanelId === panelId && openPanelBtn === btnId){
+    closePanels();
+    return;
+  }
+  /* 换到另一个面板/另一个按钮：先关旧的，但不要先摘掉当前面板的 on，
+     否则同面板切换分组时会闪一下 */
+  const samePanel = openPanelId === panelId;
+  if (!samePanel) closePanels();
+
+  el.classList.add('on');
+  if (isMobile()) backdropEl.classList.add('on');
+  if (openPanelId !== panelId){
+    for (const id of PANELS){
+      const o = document.getElementById(id);
+      if (o && o !== el) o.classList.remove('on');
+    }
+  }
+  openPanelId = panelId;
+  openPanelBtn = btnId;
+  for (const b of ['btnLayers', 'btnFav', 'btnData']) setBtnOn(b, b === btnId);
+
+  if (secId){
+    const d = document.getElementById(secId);
+    if (d){
+      d.open = true;
+      if (d.scrollIntoView) d.scrollIntoView({ block: 'nearest' });
+    }
+  }
+}
+
+document.getElementById('btnLayers').onclick = () => openPanel('side', 'btnLayers', 'secLayers');
+document.getElementById('btnFav').onclick = () => openPanel('panelFav', 'btnFav');
+document.getElementById('btnData').onclick = () => openPanel('panelData', 'btnData');
+document.getElementById('favClose').onclick = closePanels;
+document.getElementById('dataClose').onclick = closePanels;
+backdropEl.onclick = closePanels;
+/* Esc 的优先级：先收浮层（面板/下拉/搜索），都没有才清测量。
+   否则正在测量时按 Esc 想关面板，结果把测量数据一起清了。 */
+window.addEventListener('keydown', e => {
+  if (e.key !== 'Escape') return;
+  const anyOpen = !!openPanelId
+    || uiSelects.some(u => u.host.classList.contains('open'))
+    || searchResults.classList.contains('on');
+  if (anyOpen){ closePanels(); closeUiSelects(); closeSearch(); return; }
+  if (measurePanel.classList.contains('on')){ endMeasure(false); toast('已清除测量', { level:'ok' }); }
+});
+
+/* ---------------- 自定义下拉 ----------------
+   为什么自己写：原生 <select> 展开后的选项列表由操作系统绘制，
+   CSS 的 font-size / 字体族一律无效 —— 这就是"二级下拉字体太大"的根因，
+   换个写法（改 CSS）永远修不好，只能换控件。
+
+   底图那个仍然保留一个隐藏的原生 select 作为【取值与选项的数据源】：
+   脚本里多处按 .value 读它，buildBaseOptions() 往它里面塞 option，
+   测试也依赖这个既有接口。这里只负责把它画出来。 */
+const uiSelects = [];
+
+function closeUiSelects(){
+  for (const u of uiSelects) u.host.classList.remove('open');
+}
+
+function makeUiSelect(host, opts){
+  opts = opts || {};
+  const src = opts.select || null;          // 可选：隐藏的原生 select
+  let items = [];
+  let value = '';
+  const onChange = opts.onChange || function(){};
+
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'usel-btn';
+  btn.setAttribute('aria-haspopup', 'listbox');
+  btn.setAttribute('aria-expanded', 'false');
+  const label = document.createElement('span');
+  const caret = document.createElement('i');
+  btn.appendChild(label); btn.appendChild(caret);
+
+  const list = document.createElement('div');
+  list.className = 'usel-list';
+  list.setAttribute('role', 'listbox');
+
+  host.appendChild(btn);
+  host.appendChild(list);
+
+  const api = { host: host, get value(){ return value; }, set: setValue,
+                refresh: refresh, options: () => items.slice() };
+  uiSelects.push(api);
+
+  /* 从原生 select 读取选项（含 optgroup 分组） */
+  function readFromSource(){
+    items = [];
+    if (!src) return;
+    for (const child of src.children){
+      if (child.tagName === 'OPTGROUP'){
+        let first = true;
+        for (const o of child.children){
+          items.push({ value: o.value, label: o.textContent.trim(),
+                       group: first ? child.label : null, disabled: o.disabled });
+          first = false;
+        }
+      } else if (child.tagName === 'OPTION'){
+        items.push({ value: child.value, label: child.textContent.trim(),
+                     group: null, disabled: child.disabled });
+      }
+    }
+  }
+
+  function paint(){
+    const cur = items.find(i => i.value === value);
+    label.textContent = cur ? cur.label : (opts.placeholder || '—');
+    for (const el of list.children){
+      if (!el.dataset || el.dataset.value === undefined) continue;
+      el.classList.toggle('sel', el.dataset.value === value);
+      el.setAttribute('aria-selected', el.dataset.value === value ? 'true' : 'false');
+    }
+  }
+
+  function renderList(){
+    list.innerHTML = '';
+    for (const it of items){
+      if (it.group){
+        const g = document.createElement('div');
+        g.className = 'usel-group';
+        g.textContent = it.group;
+        list.appendChild(g);
+      }
+      const o = document.createElement('div');
+      o.className = 'usel-opt';
+      o.dataset.value = it.value;
+      o.setAttribute('role', 'option');
+      if (it.disabled) o.setAttribute('aria-disabled', 'true');
+      const nm = document.createElement('span');
+      nm.textContent = it.label;
+      o.appendChild(nm);
+      if (it.sub){
+        const s = document.createElement('span');
+        s.className = 'uo-sub';
+        s.textContent = it.sub;
+        o.appendChild(s);
+      }
+      o.onclick = (ev) => {
+        ev.stopPropagation();
+        if (it.disabled) return;
+        choose(it.value);
+      };
+      list.appendChild(o);
+    }
+    /* 选项里可能带"（需填 key）"这类后缀，交给 opts.decorate 精简显示 */
+    if (opts.decorate) opts.decorate(items, list);
+    paint();
+  }
+
+  function choose(v){
+    if (v === value){ host.classList.remove('open'); return; }
+    setValue(v, true);
+    host.classList.remove('open');
+    btn.setAttribute('aria-expanded', 'false');
+  }
+
+  function setValue(v, fire){
+    value = v;
+    if (src && src.value !== v) src.value = v;
+    paint();
+    if (fire) onChange(v);
+  }
+
+  function refresh(){
+    if (src) readFromSource();
+    renderList();
+    if (src) value = src.value;
+    paint();
+  }
+
+  btn.onclick = (ev) => {
+    ev.stopPropagation();
+    const willOpen = !host.classList.contains('open');
+    closeUiSelects();
+    host.classList.toggle('open', willOpen);
+    btn.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
+    if (willOpen) paint();
+  };
+
+  /* 键盘可达：Esc 关闭、上下移动、回车选中 */
+  host.addEventListener('keydown', e => {
+    const opened = host.classList.contains('open');
+    if (e.key === 'Escape' && opened){
+      host.classList.remove('open');
+      btn.setAttribute('aria-expanded', 'false');
+      e.stopPropagation();
+      return;
+    }
+    if (e.key === 'Enter' || e.key === ' '){
+      if (!opened){ e.preventDefault(); btn.click(); }
+      return;
+    }
+    if (!opened || (e.key !== 'ArrowDown' && e.key !== 'ArrowUp')) return;
+    e.preventDefault();
+    const usable = items.filter(i => !i.disabled);
+    if (!usable.length) return;
+    let i = usable.findIndex(x => x.value === value);
+    i = e.key === 'ArrowDown' ? Math.min(usable.length - 1, i + 1) : Math.max(0, i - 1);
+    setValue(usable[i].value, true);
+  });
+
+  if (opts.options){
+    items = opts.options.map(o => Object.assign({}, o));
+    value = opts.value != null ? opts.value : (items[0] && items[0].value) || '';
+    renderList();
+  } else if (src){
+    refresh();
+  }
+  return api;
+}
+
+/* 点空白处收起下拉与搜索结果 */
+document.addEventListener('click', e => {
+  if (!e.target.closest || !e.target.closest('.usel')) closeUiSelects();
+});
+
+/* 底图下拉：以隐藏的原生 select 为数据源（basemapUi 已在前面以 let 声明） */
+basemapUi = makeUiSelect(document.getElementById('baseUsel'), {
+  select: document.getElementById('baseSel'),
+  placeholder: '选择底图',
+  onChange: function(v){ setBase(v); }
+});
+
+/* ---------------- 主题与字号（1.2 / 3.6）----------------
+   主题只改界面，不动地图容器背景 —— 底图瓦片是浅色的，把地图底色改深，
+   瓦片没铺满的地方会露出深色缝隙，拖动时像"栅栏"（踩过一次）。
+   字号用 rem 的相对体系：跟随系统 = 不写死根字号，交给浏览器默认值；
+   手动档位则直接改 html 的 font-size，整页等比缩放。 */
+const THEME_OPTS = [
+  { value:'auto',  label:'跟随系统' },
+  { value:'light', label:'浅色' },
+  { value:'dark',  label:'深色' }
+];
+const FONT_OPTS = [
+  { value:'auto',   label:'跟随系统' },
+  { value:'small',  label:'小' },
+  { value:'normal', label:'标准' },
+  { value:'large',  label:'大' }
+];
+const FONT_SCALE = { auto:null, small:87.5, normal:100, large:115 };
+const mqDark = window.matchMedia('(prefers-color-scheme: dark)');
+
+function applyTheme(mode){
+  try { localStorage.setItem('uom_theme', mode); } catch(e){}
+  const dark = mode === 'dark' || (mode === 'auto' && mqDark.matches);
+  document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+}
+function applyFont(mode){
+  try { localStorage.setItem('uom_font', mode); } catch(e){}
+  const pct = FONT_SCALE[mode];
+  if (pct == null) document.documentElement.style.removeProperty('font-size');
+  else document.documentElement.style.fontSize = pct + '%';
+}
+
+let savedTheme = 'auto', savedFont = 'auto';
+try { savedTheme = localStorage.getItem('uom_theme') || 'auto'; } catch(e){}
+try { savedFont = localStorage.getItem('uom_font') || 'auto'; } catch(e){}
+
+const themeUi = makeUiSelect(document.getElementById('themeUsel'), {
+  options: THEME_OPTS, value: savedTheme, onChange: applyTheme
+});
+const fontUi = makeUiSelect(document.getElementById('fontUsel'), {
+  options: FONT_OPTS, value: savedFont, onChange: applyFont
+});
+applyTheme(savedTheme);
+applyFont(savedFont);
+/* 跟随系统时，系统主题切换要实时反映 */
+if (mqDark.addEventListener){
+  mqDark.addEventListener('change', () => { if (savedTheme === 'auto') applyTheme('auto'); });
+}
+
+/* ---------------- 底图失败提示可关闭（2.5）----------------
+   没配 key 时提示会一直挂着挡地图，之前没有关闭入口。
+   关闭后记进 localStorage，之后不再自动弹；面板里保留"恢复提示"。 */
+const WARN_HIDE_KEY = 'uom_hide_basewarn';
+function warnHidden(){
+  try { return localStorage.getItem(WARN_HIDE_KEY) === '1'; } catch(e){ return false; }
+}
+function setWarnHidden(v){
+  try { v ? localStorage.setItem(WARN_HIDE_KEY, '1')
+          : localStorage.removeItem(WARN_HIDE_KEY); } catch(e){}
+}
+{
+  const crsWarnBox = document.getElementById('amapWarn');
+  const hint = document.getElementById('crsWarnHint');
+  const x = crsWarnBox.querySelector('[data-close-warn]');
+  if (x){
+    x.onclick = (ev) => {
+      ev.stopPropagation();
+      setWarnHidden(true);
+      syncCrsWarn();
+      toast('已隐藏坐标系提示', { detail:'设置 → 底图 里有「恢复显示」' });
+    };
+  }
+  const show = document.getElementById('crsWarnShow');
+  if (show){
+    show.onclick = (ev) => {
+      ev.preventDefault();
+      setWarnHidden(false);
+      syncCrsWarn();
+    };
+  }
+  /* 提示框隐藏时把「恢复显示」这一行亮出来 —— 放在框外面才点得到 */
+  if (hint) hint.style.display = warnHidden() ? 'block' : 'none';
+}
+
+/* GCJ-02 / BD-09 底图要提示偏移；用户隐藏过就不再自动弹（2.5）。
+   集中在一处，免得 setBase 和"恢复"各写一份条件。 */
+function syncCrsWarn(){
+  const crsWarnBox = document.getElementById('amapWarn');
+  if (!crsWarnBox) return;
+  const hint = document.getElementById('crsWarnHint');
+  const hidden = warnHidden();
+  const offset = currentBaseCrs() !== 'WGS84';
+  crsWarnBox.classList.toggle('on', !hidden && offset);
+  if (hint) hint.style.display = (hidden && offset) ? 'block' : 'none';
+}
 
 /* ---------------- 诊断信息导出 ----------------
    GitHub Pages 上没有 /__diag 端点，所以把运行数据在本地留档，
@@ -1746,53 +2845,31 @@ function collectDiag(){
        + '\n\n--- 事件留档 ---\n' + DIAG.join('\n');
 }
 
-/* 把当前视野的瓦片列表交给本地服务器（用已验证的 Python 读取器）
-   算出「哪些本该有数据」，再与客户端实际拿到的比对。
-   这能直接区分：界面上白掉的一片到底是「本来就没数据」还是「取数出了问题」。 */
+/* 运行自检。
+   注意：这一项原来只在本地能用（依赖 Python 服务的 /diag/view），线上是死的。
+   现在主体检在浏览器里做（枚举视野瓦片 → Worker 批量取数 → 统计有/无数据），
+   本地服务器在时再额外做一次交叉比对，不一致就说明取数链路有问题。 */
 document.getElementById('diagView').onclick = async () => {
   const btn = document.getElementById('diagView');
-  const out = document.getElementById('diagOut');
-  const show = (t) => { out.style.display = 'block'; out.value = t; };
-  if (!window.__localServer){
-    show('线上站点没有本地服务器，无法对比。\n请在本地（python serve.py）打开此页面。');
-    return;
-  }
-  btn.textContent = '对比中…';
+  const label = btn.textContent;
+  btn.textContent = '自检中…';
   try {
-    const z = Math.min(map.getZoom(), NATIVE_MAX_Z);
-    const b = map.getBounds();
-    const n = 1 << z;
-    const x0 = Math.floor((b.getWest() + 180) / 360 * n);
-    const x1 = Math.floor((b.getEast() + 180) / 360 * n);
-    const y0 = Math.floor((1 - Math.asinh(Math.tan(b.getNorth() * Math.PI / 180)) / Math.PI) / 2 * n);
-    const y1 = Math.floor((1 - Math.asinh(Math.tan(b.getSouth() * Math.PI / 180)) / Math.PI) / 2 * n);
-    const r = await fetch(`diag/view?z=${z}&x0=${x0}&x1=${x1}&y0=${y0}&y1=${y1}`);
-    const j = await r.json();
-    let missing = [], got = 0;
-    for (const [x, y] of j.haveList){
-      const v = tileStore.get(z + '/' + x + '/' + y);
-      if (v && v.data) got++;
-      else if (missing.length < 20) missing.push(z + '/' + x + '/' + y);
-    }
-    const lines = [
-      `当前视野 z${z}，范围 x${x0}-${x1} y${y0}-${y1}`,
-      `服务端（Python 读取器）判定：共 ${j.count} 块，有数据 ${j.have}，无数据 ${j.lack}`,
-      `客户端实际拿到数据：${got} 块`,
-      `应得而未得：${j.have - got} 块`,
-      '',
-      missing.length ? '缺失示例：' + missing.join(', ') : '（无缺失）',
-      '',
-      j.have - got > 0
-        ? '结论：存在应有数据却未拿到的情况 —— 取数链路有问题。'
-        : '结论：服务端说该有数据的，客户端都拿到了。界面上的白色区域属于「本来就没有适飞数据」。'
-    ];
-    show(lines.join('\n'));
-    report('VIEW_CHECK', { z, serverHave: j.have, clientGot: got,
-                           missing: j.have - got, serverLack: j.lack });
-  } catch (e) {
-    show('对比失败：' + ((e && e.message) || e));
+    const parts = [];
+    parts.push('构建 ' + BUILD + '　' + new Date().toLocaleString());
+    parts.push('地址 ' + location.origin + (window.__localServer ? '（本地服务）' : '（线上）'));
+    parts.push('底图 ' + currentBaseKind() + ' / ' + currentBaseCrs());
+    parts.push('');
+    parts.push('── 视野瓦片自检 ──');
+    parts.push(await diagViewOnline());
+    parts.push('');
+    parts.push('── 底图探活 ──');
+    parts.push(await diagBaseProbe());
+    showDiag(parts.join('\n'));
+  } catch(e){
+    showDiag('自检失败：' + ((e && e.message) || e));
+    report('DIAG_FAIL', (e && e.message) || String(e));
   }
-  btn.textContent = '对比当前视野';
+  btn.textContent = label;
 };
 
 document.getElementById('diagCopy').onclick = async () => {
@@ -1853,11 +2930,18 @@ function buildKeyInputs(){
 }
 
 /* ---------------- 自定义图源 ---------------- */
+/* 自定义图源默认收起：它是给进阶用户的，展开状态没必要常驻 */
+document.getElementById('cstToggle').onclick = () => {
+  const box = document.getElementById('cstBox');
+  const show = box.style.display === 'none';
+  box.style.display = show ? 'block' : 'none';
+  document.getElementById('cstToggle').textContent = show ? '收起自定义图源' : '自定义图源…';
+};
 document.getElementById('cstAdd').onclick = () => {
   const url = document.getElementById('cstUrl').value.trim();
-  if (!url) { alert('请填写瓦片地址模板'); return; }
+  if (!url) { toast('请填写瓦片地址模板', { level:'warn' }); return; }
   if (url.indexOf('{z}') < 0 || url.indexOf('{x}') < 0 || url.indexOf('{y}') < 0){
-    alert('地址模板必须包含 {z} {x} {y}');
+    toast('地址模板必须包含 {z} {x} {y}', { level:'warn' });
     return;
   }
   const keyName = document.getElementById('cstKey').value.trim();
@@ -1899,29 +2983,1075 @@ document.getElementById('lyZn').onchange = e => {
   if (!zoneLayer) return;
   e.target.checked ? map.addLayer(zoneLayer) : map.removeLayer(zoneLayer);
 };
-document.getElementById('provSel').onchange = e => {
-  if (!e.target.value) return;
-  const [lon, lat, z] = e.target.value.split(',').map(Number);
-  map.setView([lat, lon], z, { animate: true });
-  if (isMobile()) setDrawer(false);
+
+/* ================================================================
+   地点搜索（1.1 / 2.3 / 2.9）
+   三级来源，按"离线可用优先"排序：
+     1) 坐标解析 —— 纯本地，永远可用（同时满足 2.9 的坐标输入）
+     2) 内置省/直辖市 —— 数据源是隐藏的 #provSel，不再维护第二份清单
+     3) 天地图地理编码 —— 在线，需要 tk
+   第 3 级最不确定：它要求 tk 开通了"地理编码"服务，且该接口允许浏览器
+   跨域调用。拿不到就明确说是哪一类原因，不静默失败。
+   ================================================================ */
+const searchInput = document.getElementById('searchInput');
+const searchResults = document.getElementById('searchResults');
+const searchClearBtn = document.getElementById('searchClear');
+let searchItems = [], searchSel = -1, searchSeq = 0;
+
+/* 中国境内范围，用于判断坐标顺序与是否越界 */
+const CN_BOX = { lonMin: 73.66, lonMax: 135.05, latMin: 3.86, latMax: 53.55 };
+
+/* 解析 "39.90,116.41" / "39.90 116.41" / "116.41,39.90"
+   顺序判断：绝对值 >60 的必定是经度。 */
+function parseCoord(text){
+  const m = String(text).trim()
+    .match(/^(-?\d{1,3}(?:\.\d+)?)\s*[,，;；\s]\s*(-?\d{1,3}(?:\.\d+)?)$/);
+  if (!m) return null;
+  const a = parseFloat(m[1]), b = parseFloat(m[2]);
+  if (!isFinite(a) || !isFinite(b)) return null;
+  let lat, lon;
+  if (Math.abs(a) > 60 && Math.abs(b) <= 60){ lon = a; lat = b; }
+  else { lat = a; lon = b; }
+  if (lat < -90 || lat > 90 || lon < -180 || lon > 180) return null;
+  return { lat, lon };
+}
+
+/* 省市清单直接从隐藏的 native select 读，避免第二份数据 */
+function provinceEntries(){
+  const sel = document.getElementById('provSel');
+  const out = [];
+  if (!sel) return out;
+  const push = (o, group) => {
+    if (!o.value) return;
+    const p = o.value.split(',').map(Number);
+    if (p.length < 3 || !isFinite(p[0]) || !isFinite(p[1])) return;
+    out.push({ kind:'prov', name: o.textContent.trim(), lon: p[0], lat: p[1],
+               zoom: p[2], group: group || '' });
+  };
+  for (const child of sel.children){
+    if (child.tagName === 'OPTGROUP'){
+      for (const o of child.children) push(o, child.label);
+    } else if (child.tagName === 'OPTION'){
+      /* 这里必须用 child：上面那个 o 是 for...of 的块级绑定，出了那个分支就不存在了。
+         之前写成 push(o, '')，于是"选省份…"这个顶层 option 一被遍历到就抛
+         ReferenceError，整个搜索（含坐标解析）全废 —— 静态检查抓不到，
+         因为 o 在别处确实有声明。是浏览器里跑一遍才发现的。 */
+      push(child, '');
+    }
+  }
+  return out;
+}
+
+function renderSearch(items, note){
+  searchItems = items;
+  searchSel = -1;
+  const box = searchResults;
+  if (!items.length && !note){
+    box.classList.remove('on');
+    box.innerHTML = '';
+    return;
+  }
+  const rows = items.map((it, i) => {
+    const kindLabel = it.kind === 'coord' ? '坐标'
+      : it.kind === 'prov' ? '行政区' : '地点';
+    const dist = it.dist ? (it.dist < 1000 ? Math.round(it.dist) + 'm'
+                                            : (it.dist / 1000).toFixed(1) + 'km') : '';
+    return '<div class="sres" data-i="' + i + '">' +
+      '<span class="sr-k">' + escapeHtml(kindLabel) + '</span>' +
+      '<span class="sr-n">' + escapeHtml(it.name) + '</span>' +
+      (dist ? '<span class="sr-d">' + escapeHtml(dist) + '</span>' : '') +
+      '</div>';
+  }).join('');
+  box.innerHTML = rows + (note ? '<div class="sempty">' + escapeHtml(note) + '</div>' : '');
+  box.classList.add('on');
+  for (const el of box.querySelectorAll('.sres')){
+    el.onclick = () => gotoSearchItem(searchItems[+el.dataset.i]);
+  }
+}
+
+function closeSearch(){
+  searchResults.classList.remove('on');
+  searchItems = [];
+  searchSel = -1;
+}
+
+/* 本地匹配：坐标 + 省市名 */
+function localSearch(kw){
+  const out = [];
+  const coord = parseCoord(kw);
+  if (coord){
+    const inCN = coord.lon > CN_BOX.lonMin && coord.lon < CN_BOX.lonMax &&
+                 coord.lat > CN_BOX.latMin && coord.lat < CN_BOX.latMax;
+    out.push({ kind:'coord', name: coord.lat.toFixed(6) + ', ' + coord.lon.toFixed(6),
+               lat: coord.lat, lon: coord.lon,
+               note: inCN ? '' : '该坐标不在中国境内，可能没有数据' });
+  }
+  const k = kw.toLowerCase();
+  for (const p of provinceEntries()){
+    if (p.name.indexOf(kw) >= 0 || p.group.indexOf(kw) >= 0) out.push(p);
+  }
+  return out;
+}
+
+/* 天地图地理编码。字段名按接口文档写，但做了容错：不同版本返回结构有差异，
+   拿不到就 report 出原始字段名，便于按实际返回调整。 */
+function pickNum(o, keys){
+  for (const k of keys){
+    if (o && o[k] != null && isFinite(parseFloat(o[k]))) return parseFloat(o[k]);
+  }
+  return NaN;
+}
+async function tdtGeocode(kw){
+  const tk = CONFIG.keys.tdt;
+  if (!tk) throw new Error('没有天地图 tk');
+  const url = 'https://api.tianditu.gov.cn/v2/search?postStr=' +
+    encodeURIComponent(JSON.stringify({ keyWord: kw, queryType: 1, start: 0, count: 8 })) +
+    '&type=query&tk=' + encodeURIComponent(tk);
+  const r = await fetch(url, { cache: 'no-store' });
+  if (!r.ok) throw new Error('接口返回 HTTP ' + r.status);
+  const j = await r.json();
+  const pois = j.pois || (j.data && j.data.pois) || j.result || [];
+  report('GEOCODE_OK', { keys: Object.keys(j || {}).join(','), n: pois.length });
+  return pois.map(p => {
+    const lon = pickNum(p, ['lon', 'lng', 'LON']), lat = pickNum(p, ['lat', 'LAT']);
+    if (!isFinite(lon) || !isFinite(lat)) return null;
+    return { kind:'geo', lat: lat, lon: lon,
+             name: p.name || p.address || kw };
+  }).filter(Boolean);
+}
+
+function gotoSearchItem(it){
+  if (!it) return;
+  closeSearch();
+  searchInput.blur();
+  const z = it.zoom || (it.kind === 'geo' ? 15 : 13);
+  map.setView(wgsToMap(it.lat, it.lon), z, { animate: true });
+  /* 搜索结果是 WGS84（天地图为 CGCS2000≈WGS84），直接查询 */
+  queryAt(it.lat, it.lon);
+  if (it.note) toast(it.note, { level:'warn' });
+}
+
+async function runSearch(kw){
+  const seq = ++searchSeq;
+  const local = localSearch(kw);
+  renderSearch(local, local.length ? null : '正在查询…');
+  if (!kw || local.some(x => x.kind === 'coord')) return;   // 坐标已足够，不必联网
+  let remote = [], err = null;
+  try {
+    remote = await tdtGeocode(kw);
+  } catch(e){
+    err = e;
+    report('GEOCODE_FAIL', (e && e.message) || String(e));
+  }
+  if (seq !== searchSeq) return;                            // 已有更新的输入
+  const merged = local.concat(remote);
+  if (merged.length){
+    renderSearch(merged, err ? '在线结果不可用（' + ((err && err.message) || '失败') + '）' : null);
+  } else if (err){
+    const msg = (err && err.message) || '未知错误';
+    const hint = /Failed to fetch|NetworkError|Load failed/i.test(msg)
+      ? '接口不允许浏览器直接调用（跨域被拒）或网络不通'
+      : (/HTTP 4\d\d/.test(msg) ? '很可能这个 tk 没有开通「地理编码」服务权限'
+                                : msg);
+    renderSearch([], '在线搜索不可用：' + hint + '。可直接输入坐标，或用行政区名。');
+  } else {
+    renderSearch([], '没有找到匹配的地点');
+  }
+}
+
+searchInput.addEventListener('input', () => {
+  const kw = searchInput.value.trim();
+  searchClearBtn.hidden = !kw;
+  if (!kw){ closeSearch(); return; }
+  runSearch(kw);
+});
+searchInput.addEventListener('keydown', e => {
+  if (e.key === 'Escape'){ closeSearch(); searchInput.blur(); return; }
+  if (!searchResults.classList.contains('on') || !searchItems.length) {
+    if (e.key === 'Enter'){ e.preventDefault(); runSearch(searchInput.value.trim()); }
+    return;
+  }
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp'){
+    e.preventDefault();
+    searchSel = e.key === 'ArrowDown'
+      ? Math.min(searchItems.length - 1, searchSel + 1)
+      : Math.max(0, searchSel - 1);
+    const rows = searchResults.querySelectorAll('.sres');
+    rows.forEach((el, i) => el.classList.toggle('sel', i === searchSel));
+    if (rows[searchSel] && rows[searchSel].scrollIntoView)
+      rows[searchSel].scrollIntoView({ block:'nearest' });
+  } else if (e.key === 'Enter'){
+    e.preventDefault();
+    gotoSearchItem(searchItems[searchSel >= 0 ? searchSel : 0]);
+  }
+});
+searchClearBtn.onclick = () => {
+  searchInput.value = '';
+  searchClearBtn.hidden = true;
+  closeSearch();
+  searchInput.focus();
 };
-document.getElementById('btnLoc').onclick = () => {
-  if (!navigator.geolocation) return alert('浏览器不支持定位');
-  navigator.geolocation.getCurrentPosition(
-    p => {
-      map.setView([p.coords.latitude, p.coords.longitude], 13);
-      queryAt(p.coords.latitude, p.coords.longitude);
-    },
-    err => alert('定位失败：' + err.message +
-      '\n（浏览器定位需要 HTTPS 或 localhost，且已授权）')
-  );
+
+/* ================================================================
+   手动刷新（2.1）
+   轻刷：只清"当前视野 + 一圈缓冲"内的瓦片缓存，适合某片区域卡白刷不出来。
+   重刷：清空全部缓存并重新加载大疆分级层，适合整体状态错乱。
+   触发方式：点 = 轻刷，长按 600ms = 重刷（按钮 title 里写明了）。
+   ================================================================ */
+function tileLatLon(z, x, y){
+  const n = Math.pow(2, z);
+  const lon0 = x / n * 360 - 180, lon1 = (x + 1) / n * 360 - 180;
+  const latOf = (t) => Math.atan(Math.sinh(Math.PI * (1 - 2 * t / n))) * 180 / Math.PI;
+  return { lon0: lon0, lon1: lon1, lat0: latOf(y + 1), lat1: latOf(y) };
+}
+function refreshTiles(heavy){
+  const b = map.getBounds();
+  const pad = 0.02;                     // 缓冲一点点，把视口边缘算进来
+  let n = 0;
+  if (heavy){
+    n = tileStore.size;
+    tileStore.clear();
+  } else {
+    for (const k of Array.from(tileStore.keys())){
+      const p = k.split('/');
+      const t = tileLatLon(+p[0], +p[1], +p[2]);
+      if (b.getSouth() - pad <= t.lat1 && b.getNorth() + pad >= t.lat0 &&
+          b.getEast() + pad >= t.lon0 && b.getWest() - pad <= t.lon1){
+        tileStore.delete(k);
+        n++;
+      }
+    }
+  }
+  uomTiles = 0; uomTileErrs = 0; uomNoData = 0;
+  if (uomLayer) uomLayer.redraw();
+  if (baseLayer && baseLayer.redraw) baseLayer.redraw();
+  if (heavy){
+    djiCache.clear();
+    djiLoading.clear();
+    syncDjiVisibility();
+  }
+  hideBaseWarn();
+  updateLayerBadge();
+  toast(heavy ? '已清空全部瓦片缓存' : '已刷新当前视野',
+        { level:'ok', detail: heavy ? '重新加载中…' : '重载 ' + n + ' 块瓦片' });
+  report('MANUAL_REFRESH', { heavy: heavy, tiles: n, zoom: map.getZoom() });
+}
+{
+  const btn = document.getElementById('btnRefresh');
+  let timer = null, longFired = false;
+  const start = () => {
+    longFired = false;
+    timer = setTimeout(() => {
+      longFired = true;
+      refreshTiles(true);
+    }, 600);
+  };
+  const end = () => {
+    if (timer){ clearTimeout(timer); timer = null; }
+    if (!longFired) refreshTiles(false);
+  };
+  btn.addEventListener('pointerdown', start);
+  btn.addEventListener('pointerup', end);
+  btn.addEventListener('pointercancel', () => {
+    if (timer){ clearTimeout(timer); timer = null; }
+    longFired = true;                   // 取消时不要触发轻刷
+  });
+  btn.addEventListener('pointerleave', () => {
+    if (timer){ clearTimeout(timer); timer = null; longFired = true; }
+  });
+  btn.addEventListener('contextmenu', e => e.preventDefault());
+}
+
+/* ================================================================
+   定位（2.2）
+   之前把"未授权"和"协议不对"混成一句话，导致排查方向跑偏。
+   这里按 err.code 分开给处置办法，并且**先查权限状态** —— 已被明确拒绝时
+   不必再等一轮超时，直接把怎么解除说清楚。
+   ================================================================ */
+function locateMe(){
+  if (!navigator.geolocation){
+    toast('这个浏览器不支持定位', { level:'err', detail:'请改用较新的 Chrome / Edge / Safari' });
+    return;
+  }
+  if (!window.isSecureContext){
+    toast('当前不是安全上下文，浏览器禁止定位', { level:'err',
+      detail: '定位只在 https:// 或 http://localhost 下可用。\n当前地址：'
+              + location.origin + '\n（这是协议限制，不是权限问题）' });
+    report('GEO_INSECURE', location.origin);
+    return;
+  }
+
+  const go = () => {
+    navigator.geolocation.getCurrentPosition(
+      p => {
+        const la = p.coords.latitude, lo = p.coords.longitude;
+        map.setView(wgsToMap(la, lo), 13, { animate: true });
+        queryAt(la, lo);
+        toast('已定位到当前位置', { level:'ok',
+          detail: '精度约 ' + Math.round(p.coords.accuracy || 0) + ' 米' });
+      },
+      geoError,
+      { enableHighAccuracy: false, timeout: 12000, maximumAge: 60000 }
+    );
+  };
+
+  if (navigator.permissions && navigator.permissions.query){
+    navigator.permissions.query({ name: 'geolocation' }).then(st => {
+      if (st.state === 'denied') geoError({ code: 1, message: '权限已被拒绝' });
+      else go();
+    }).catch(go);
+  } else {
+    go();
+  }
+}
+
+function geoError(err){
+  const c = err && (err.code != null ? err.code : (err.code === 0 ? 0 : err.code));
+  let title, detail;
+  if (c === 1){
+    title = '定位被浏览器拒绝（权限问题）';
+    detail = '本站是 https，协议没问题 —— 是位置权限被设成了"阻止"。\n\n' +
+      '桌面 Chrome / Edge：点地址栏左侧的锁或滑块图标 → 位置 → 允许，然后刷新页面\n' +
+      'Windows 还要打开：设置 → 隐私和安全性 → 位置\n' +
+      '手机浏览器：站点设置 / 应用权限里允许"位置"\n' +
+      '（若曾经点过"阻止"，必须去站点设置里手动改回来，网页自身无法再弹窗）';
+  } else if (c === 2){
+    title = '拿不到位置（定位源不可用）';
+    detail = '设备没有返回位置。常见原因：\n' +
+      '· 系统定位服务关着\n' +
+      '· 室内 / 没有 GPS 或 WiFi 定位源\n' +
+      '· 桌面设备没有定位硬件\n可改用坐标输入（搜索框里直接输入 纬度,经度）。';
+  } else if (c === 3){
+    title = '定位超时';
+    detail = '12 秒内没拿到位置。可以重试，或直接输入坐标。';
+  } else {
+    title = '定位失败';
+    detail = (err && err.message) || String(err);
+  }
+  report('GEO_ERR', { code: c, msg: (err && err.message) || '' });
+  toast(title, { level:'err', detail: detail, ms: 0,
+    action: { label:'重试', fn: locateMe } });
+}
+document.getElementById('btnLoc').onclick = locateMe;
+
+/* ================================================================
+   测距 / 测面（3.1）
+   顶点存在底图坐标系下（用户看到的就是底图），距离按大圆算，
+   面积用球面多边形公式 —— 平面近似在跨省尺度上误差太大。
+   ================================================================ */
+let measureMode = false;      // 是否处于"正在画"的状态
+let measureKind = '';         // '' | 'line' | 'area'
+let measurePts = [], measureShape = null, measureVerts = [];
+const MEASURE_COLOR = '#7a4bd0';
+
+/* 测量面板元素。数字用大字放在顶部居中的独立面板里 ——
+   之前塞在右上角的 Leaflet 控件里，那个位置被搜索栏盖住，等于看不见。 */
+const measurePanel = document.getElementById('measurePanel');
+const measureAskEl = document.getElementById('measureAsk');
+const measureWorkEl = document.getElementById('measureWork');
+const measureBigEl = document.getElementById('measureBig');
+const measureSmallEl = document.getElementById('measureSmall');
+const measureKindLabel = document.getElementById('measureKindLabel');
+
+function fmtDist(m){
+  if (m < 1000) return m.toFixed(m < 10 ? 1 : 0) + ' m';
+  return (m / 1000).toFixed(m < 10000 ? 2 : 1) + ' km';
+}
+function havMetres(a, b){
+  const R = 6371008.8, rad = Math.PI / 180;
+  const dLat = (b[0] - a[0]) * rad, dLon = (b[1] - a[1]) * rad;
+  const la1 = a[0] * rad, la2 = b[0] * rad;
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(la1) * Math.cos(la2) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
+}
+/* 球面多边形面积（m²）：A = R²/2 · Σ(λ₂-λ₁)(2+sinφ₁+sinφ₂)，取绝对值 */
+function sphericalRingArea(pts){
+  if (pts.length < 3) return 0;
+  const R = 6371008.8, rad = Math.PI / 180;
+  let sum = 0;
+  for (let i = 0; i < pts.length; i++){
+    const p1 = pts[i], p2 = pts[(i + 1) % pts.length];
+    sum += (p2[1] - p1[1]) * rad * (2 + Math.sin(p1[0] * rad) + Math.sin(p2[0] * rad));
+  }
+  return Math.abs(sum * R * R / 2);
+}
+function fmtArea(m2){
+  if (m2 < 10000) return m2.toFixed(0) + ' m²';
+  if (m2 < 1e6) return (m2 / 10000).toFixed(2) + ' 公顷';
+  return (m2 / 1e6).toFixed(2) + ' km²';
+}
+
+function measureTotal(){
+  let d = 0;
+  for (let i = 1; i < measurePts.length; i++) d += havMetres(measurePts[i - 1], measurePts[i]);
+  return d;
+}
+function measureRender(){
+  if (measureShape){ map.removeLayer(measureShape); measureShape = null; }
+  const pts = measurePts;
+  const asArea = measureKind === 'area';
+  if (pts.length >= 2){
+    measureShape = (asArea && pts.length >= 3)
+      ? L.polygon(pts, { color: MEASURE_COLOR, weight: 2, fillColor: MEASURE_COLOR,
+                         fillOpacity: .12, dashArray: '5,4' }).addTo(map)
+      : L.polyline(pts, { color: MEASURE_COLOR, weight: 2,
+                          dashArray: '5,4' }).addTo(map);
+  }
+  const total = measureTotal();
+  if (asArea){
+    measureBigEl.textContent = pts.length >= 3
+      ? fmtArea(sphericalRingArea(pts))
+      : '再点 ' + (3 - pts.length) + ' 个点';
+    measureSmallEl.textContent = '周长 ' + fmtDist(total) + '　·　' + pts.length + ' 个顶点';
+  } else {
+    measureBigEl.textContent = pts.length >= 2 ? fmtDist(total) : '点地图开始';
+    measureSmallEl.textContent = pts.length + ' 个顶点';
+  }
+  report('MEASURE', { kind: measureKind, pts: pts.length, total: Math.round(total) });
+}
+function measureAdd(latlng){
+  measurePts.push([latlng.lat, latlng.lng]);
+  /* 顶点标记单独存一份，这样"撤销一点"能精确删掉它 ——
+     靠遍历图层按颜色找是脆的，而且每撤销一次就要全图扫一遍。 */
+  measureVerts.push(
+    L.circleMarker(latlng, { radius:4, color:'#fff', weight:2,
+      fillColor: MEASURE_COLOR, fillOpacity:1, pane:'markerPane' }).addTo(map));
+  measureRender();
+}
+function measureUndo(){
+  if (!measurePts.length) return;
+  measurePts.pop();
+  const v = measureVerts.pop();
+  if (v) map.removeLayer(v);
+  measureRender();
+}
+/* 测量交互（按要求改）：
+     · 点工具条的测量按钮 -> 面板先问"要测什么"（测距 / 测面积）
+     · 选定后点地图加顶点，数字实时显示在面板里
+     · 点「确定」结束并保留图形；「撤销一点」退一个顶点；「取消」清掉
+   不再用双击结束：浏览器的 dblclick 之前会先派发两次 click，等于多点一个
+   顶点，而且和用户对双击的直觉（放大）冲突。 */
+function openMeasurePanel(){
+  measureKind = '';
+  measureMode = false;
+  measureAskEl.style.display = '';
+  measureWorkEl.style.display = 'none';
+  measurePanel.classList.add('on');
+  setBtnOn('btnMeasure', true);
+  map.doubleClickZoom.disable();      // 测量期间别让双击把地图放大
+}
+function beginMeasure(kind){
+  measureKind = kind;
+  measureMode = true;
+  measureAskEl.style.display = 'none';
+  measureWorkEl.style.display = '';
+  measureKindLabel.textContent = kind === 'area' ? '测面积' : '测距';
+  measureRender();
+}
+/* keep=true 保留已画的图形；false 清掉 */
+function endMeasure(keep){
+  measureMode = false;
+  map.doubleClickZoom.enable();
+  measurePanel.classList.remove('on');
+  setBtnOn('btnMeasure', false);
+  if (!keep) clearMeasure();
+}
+/* 清掉测量图形与顶点。
+   顶点现在存在 measureVerts 里，按引用删即可 ——
+   之前是遍历全图按 fillColor 找，既慢又可能误删同色的其他图形。 */
+function clearMeasure(){
+  if (measureShape && map.hasLayer(measureShape)) map.removeLayer(measureShape);
+  measureShape = null;
+  for (const v of measureVerts) if (map.hasLayer(v)) map.removeLayer(v);
+  measureVerts = [];
+  measurePts = [];
+}
+function measureSummaryNow(){
+  if (measureKind === 'area' && measurePts.length >= 3){
+    return fmtArea(sphericalRingArea(measurePts)) +
+           '（周长 ' + fmtDist(measureTotal()) + '）';
+  }
+  return fmtDist(measureTotal());
+}
+document.getElementById('btnMeasure').onclick = () => {
+  if (measurePanel.classList.contains('on')){
+    endMeasure(false);                 // 再点一次 = 取消并清除
+    return;
+  }
+  clearMeasure();                      // 每次重新开始，避免上一段残留
+  openMeasurePanel();
 };
+document.getElementById('measureLine').onclick = () => beginMeasure('line');
+document.getElementById('measureArea').onclick = () => beginMeasure('area');
+document.getElementById('measureUndo').onclick = measureUndo;
+document.getElementById('measureCancel').onclick = () => endMeasure(false);
+document.getElementById('measureOk').onclick = () => {
+  const need = measureKind === 'area' ? 3 : 2;
+  if (measurePts.length < need){
+    toast(measureKind === 'area' ? '面积至少要 3 个点' : '至少要点 2 个点',
+          { level:'warn' });
+    return;
+  }
+  const summary = measureSummaryNow();
+  endMeasure(true);
+  toast('测量完成', { level:'ok', detail: summary });
+};
+
+/* ================================================================
+   收藏与历史（3.2）
+   ================================================================ */
+const FAV_KEY = 'uom_favs';
+function loadFavs(){
+  try { return JSON.parse(localStorage.getItem(FAV_KEY) || '[]') || []; }
+  catch(e){ return []; }
+}
+function saveFavs(list){
+  try { localStorage.setItem(FAV_KEY, JSON.stringify(list)); } catch(e){}
+}
+function addFav(name, lat, lon){
+  const list = loadFavs();
+  if (list.some(f => Math.abs(f.lat - lat) < 1e-7 && Math.abs(f.lon - lon) < 1e-7)){
+    toast('这个点已经在收藏里了', { level:'warn' });
+    return;
+  }
+  list.unshift({ name: name || (lat.toFixed(5) + ', ' + lon.toFixed(5)),
+                 lat: lat, lon: lon, ts: Date.now() });
+  saveFavs(list);
+  renderFavs();
+  toast('已收藏', { level:'ok', detail: name || '' });
+}
+function renderFavs(){
+  const box = document.getElementById('favList');
+  const list = loadFavs();
+  if (!list.length){
+    box.innerHTML = '<div class="empty">还没有收藏。查询一个点后点「收藏此点」。</div>';
+    return;
+  }
+  box.innerHTML = list.map((f, i) =>
+    '<div class="fav-row" data-i="' + i + '">' +
+      '<span class="fr-n" title="点击改名">' + escapeHtml(f.name) + '</span>' +
+      '<span class="fr-c">' + f.lat.toFixed(4) + ',' + f.lon.toFixed(4) + '</span>' +
+      '<button class="fr-x" title="删除">×</button>' +
+    '</div>').join('');
+  box.querySelectorAll('.fav-row').forEach((row, i) => {
+    row.onclick = (ev) => {
+      if (ev.target.classList.contains('fr-x')){
+        const l = loadFavs();
+        l.splice(i, 1);
+        saveFavs(l);
+        renderFavs();
+        return;
+      }
+      const f = loadFavs()[i];
+      map.setView(wgsToMap(f.lat, f.lon), 14, { animate: true });
+      queryAt(f.lat, f.lon);
+      if (isMobile()) closePanels();
+    };
+    const nm = row.querySelector('.fr-n');
+    nm.ondblclick = (ev) => {
+      ev.stopPropagation();
+      const l = loadFavs();
+      const v = prompt('改名', l[i].name);
+      if (v != null && v.trim()){ l[i].name = v.trim(); saveFavs(l); renderFavs(); }
+    };
+  });
+}
+document.getElementById('favExport').onclick = () => exportGeoJSON();
+
+/* ================================================================
+   坐标 / 结果复制（2.9）
+   优先用异步剪贴板 API；它需要安全上下文，失败时回退到 execCommand。
+   ================================================================ */
+async function copyText(t){
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText){
+      await navigator.clipboard.writeText(t);
+      return true;
+    }
+  } catch(e){ /* 落到下面回退 */ }
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = t;
+    ta.setAttribute('readonly', '');
+    ta.style.cssText = 'position:fixed;top:-1000px;opacity:0';
+    document.body.appendChild(ta);
+    ta.select();
+    ta.setSelectionRange(0, t.length);
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    return ok;
+  } catch(e){ return false; }
+}
+function resultText(res){
+  const v = res.verdict || {};
+  const lines = ['UOM 适飞空域查询结果',
+                 '坐标(WGS84): ' + res.lat.toFixed(6) + ', ' + res.lon.toFixed(6),
+                 '结论: ' + (v.big || '—') + (v.small ? '（' + v.small + '）' : ''),
+                 'UOM 适飞: ' + (res.uom.state === 'yes' ? '是'
+                                : res.uom.state === 'no' ? '否' : '未知')];
+  if (res.dji && res.dji.length){
+    lines.push('大疆: ' + res.dji.map(p =>
+      (DJI_LABEL[p.type] || p.type) + (p.name ? '（' + p.name + '）' : '')).join('；'));
+  } else {
+    lines.push('大疆: 未命中');
+  }
+  lines.push('ZB(SR)801: ' + (res.inZone ? '在范围内' : '不在范围'));
+  lines.push('（本工具为个人非官方项目，不作为飞行依据）');
+  return lines.join('\n');
+}
+document.getElementById('resCopy').onclick = async () => {
+  if (!lastResult) return;
+  const txt = lastResult.lat.toFixed(6) + ', ' + lastResult.lon.toFixed(6);
+  const ok = await copyText(txt);
+  toast(ok ? '已复制坐标' : '复制失败', {
+    level: ok ? 'ok' : 'err',
+    detail: ok ? txt : '浏览器拒绝了剪贴板访问，请手动选中结果里的坐标',
+    action: ok ? null : { label:'复制整段结果', fn: async () => {
+      await copyText(resultText(lastResult));
+    } }
+  });
+};
+document.getElementById('resFav').onclick = () => {
+  if (!lastResult) return;
+  addFav('', lastResult.lat, lastResult.lon);
+};
+document.getElementById('resRuler').onclick = () => {
+  if (!lastResult) return;
+  closePanels();
+  clearMeasure();
+  openMeasurePanel();
+  beginMeasure('line');                       // 从当前查询点起步量距离
+  measureAdd(L.latLng(wgsToMap(lastResult.lat, lastResult.lon)));
+  document.getElementById('result').classList.remove('on');
+};
+document.getElementById('resGrip').onclick = () =>
+  document.getElementById('result').classList.toggle('min');
 document.getElementById('btnClear').onclick = () => {
   if (marker){ map.removeLayer(marker); marker = null; }
-  document.getElementById('result').classList.remove('on');
+  endMeasure(false);                          // 一并清掉测量图形
+  const el = document.getElementById('result');
+  el.classList.remove('on');
+  el.classList.remove('min');
 };
-document.getElementById('resClose').onclick = () =>
-  document.getElementById('result').classList.remove('on');
+document.getElementById('resClose').onclick = () => {
+  const el = document.getElementById('result');
+  el.classList.remove('on');
+  el.classList.remove('min');
+};
+
+/* ================================================================
+   批量点位查询（3.4）与导入导出（3.3）
+   批量判定复用 evaluatePoint —— 和单点查询走的是同一套判定，
+   不会出现"单点说适飞、批量说禁飞"这种自相矛盾。
+   ================================================================ */
+const BULK_MAX = 2000;
+/* 导入的要素：既用于在地图上显示，也参与导出（3.3）。
+   声明放在这里（而不是 exportKML 之后）—— exportGeoJSON 也要用它。 */
+let importedFeatures = [], importLayer = null;
+function parseBulk(text){
+  const rows = [], bad = [];
+  const lines = String(text).split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++){
+    const raw = lines[i].trim();
+    if (!raw || raw.charAt(0) === '#') continue;
+    const parts = raw.split(/[,，\t;；\s]+/).filter(Boolean);
+    let name = '', lat = NaN, lon = NaN;
+    const nums = [];
+    for (const p of parts){
+      const v = parseFloat(p);
+      if (isFinite(v) && /^-?\d+(\.\d+)?$/.test(p)) nums.push(v);
+      else if (!name) name = p;
+    }
+    if (nums.length >= 2){
+      const c = parseCoord(nums[0] + ',' + nums[1]);
+      if (c){ lat = c.lat; lon = c.lon; }
+    }
+    if (!isFinite(lat) || !isFinite(lon)){
+      bad.push({ line: i + 1, raw: raw });
+      continue;
+    }
+    rows.push({ name: name || ('#' + (rows.length + 1)), lat: lat, lon: lon });
+    if (rows.length >= BULK_MAX) break;
+  }
+  return { rows: rows, bad: bad };
+}
+let bulkResults = [];
+document.getElementById('bulkRun').onclick = async () => {
+  const btn = document.getElementById('bulkRun');
+  const out = document.getElementById('bulkOut');
+  const parsed = parseBulk(document.getElementById('bulkIn').value);
+  if (!parsed.rows.length){
+    out.innerHTML = '<div class="empty">没有解析出有效点位。每行写「名称,纬度,经度」'
+      + '或「纬度,经度」。</div>';
+    return;
+  }
+  btn.disabled = true;
+  const old = btn.textContent;
+  const res = [];
+  for (let i = 0; i < parsed.rows.length; i++){
+    if (i % 10 === 0 || i === parsed.rows.length - 1){
+      btn.textContent = '查询中 ' + (i + 1) + '/' + parsed.rows.length;
+      await new Promise(r => setTimeout(r, 0));      // 让出主线程，界面不假死
+    }
+    const p = parsed.rows[i];
+    const r = await evaluatePoint(p.lat, p.lon);
+    res.push({ name: p.name, lat: p.lat, lon: p.lon, r: r });
+  }
+  btn.disabled = false;
+  btn.textContent = old;
+  bulkResults = res;
+
+  let ok = 0, no = 0, unk = 0;
+  const rows = res.map(x => {
+    const cls = x.r.verdict.cls === 'v-ok' ? 'ok' : (x.r.verdict.cls === 'v-no' ? 'no' : 'unk');
+    if (cls === 'ok') ok++; else if (cls === 'no') no++; else unk++;
+    const dji = x.r.dji.length
+      ? x.r.dji.map(p => (DJI_LABEL[p.type] || p.type)).join('/') : '—';
+    return '<tr><td>' + escapeHtml(x.name) + '</td>' +
+      '<td>' + x.lat.toFixed(5) + ',' + x.lon.toFixed(5) + '</td>' +
+      '<td><span class="tag ' + cls + '">' + escapeHtml(x.r.verdict.big) + '</span></td>' +
+      '<td>' + (x.r.uom.state === 'yes' ? '是' : x.r.uom.state === 'no' ? '否' : '未知') + '</td>' +
+      '<td>' + escapeHtml(dji) + '</td>' +
+      '<td>' + (x.r.inZone ? '在范围内' : '—') + '</td></tr>';
+  }).join('');
+  out.innerHTML =
+    '<div class="bulk-sum"><b>共 ' + res.length + ' 点</b>：' +
+    '<span class="tag ok">适飞 ' + ok + '</span> ' +
+    '<span class="tag no">非适飞 ' + no + '</span> ' +
+    '<span class="tag unk">未知 ' + unk + '</span>' +
+    (parsed.bad.length ? '　跳过 ' + parsed.bad.length + ' 行无法解析' : '') +
+    '</div><div class="bulk-scroll"><table class="bulk-tbl"><thead><tr>' +
+    '<th>名称</th><th>坐标</th><th>结论</th><th>适飞</th><th>大疆</th><th>801</th>' +
+    '</tr></thead><tbody>' + rows + '</tbody></table></div>';
+  toast('批量查询完成', { level:'ok', detail: res.length + ' 个点' });
+  report('BULK_DONE', { n: res.length, ok: ok, no: no, unk: unk });
+};
+document.getElementById('bulkClear').onclick = () => {
+  document.getElementById('bulkIn').value = '';
+  document.getElementById('bulkOut').innerHTML = '';
+  bulkResults = [];
+};
+
+function download(name, mime, text){
+  try {
+    const blob = new Blob([text], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+    return true;
+  } catch(e){
+    toast('导出失败', { level:'err', detail: (e && e.message) || String(e) });
+    return false;
+  }
+}
+function exportPoints(){
+  const pts = [];
+  for (const f of loadFavs()) pts.push({ name: f.name, lat: f.lat, lon: f.lon, src:'收藏' });
+  for (const x of bulkResults) pts.push({ name: x.name, lat: x.lat, lon: x.lon, src:'批量查询' });
+  if (lastResult && !pts.length) pts.push({ name:'当前查询', lat: lastResult.lat,
+                                            lon: lastResult.lon, src:'查询结果' });
+  return pts;
+}
+function exportGeoJSON(){
+  const feats = exportPoints().map(p => ({
+    type:'Feature',
+    geometry:{ type:'Point', coordinates:[p.lon, p.lat] },
+    properties:{ name:p.name, source:p.src, crs:'WGS84' }
+  }));
+  if (measurePts.length >= 2){
+    const coords = measurePts.map(p => [p[1], p[0]]);
+    const closed = measurePts.length >= 3;
+    feats.push({
+      type:'Feature',
+      geometry: closed ? { type:'Polygon', coordinates:[coords.concat([coords[0]])] }
+                       : { type:'LineString', coordinates: coords },
+      properties:{ name:'测量要素', source:'测距/测面', crs:'WGS84',
+                   length_m: Math.round(measureTotal()),
+                   area_m2: closed ? Math.round(sphericalRingArea(measurePts)) : null }
+    });
+  }
+  for (const g of importedFeatures) feats.push(g);
+  if (!feats.length){
+    toast('没有可导出的内容', { level:'warn', detail:'先查询或收藏几个点' });
+    return;
+  }
+  const gj = { type:'FeatureCollection',
+               crs:{ type:'name', properties:{ name:'urn:ogc:def:crs:OGC:1.3:CRS84' } },
+               metadata:{ exported: new Date().toISOString(), tool:'UOM 适飞空域查询',
+                          note:'WGS84 坐标；本工具非官方，不作为飞行依据' },
+               features: feats };
+  if (download('uom-points.geojson', 'application/geo+json',
+               JSON.stringify(gj, null, 2))){
+    toast('已导出 GeoJSON', { level:'ok', detail: feats.length + ' 个要素' });
+  }
+}
+function exportKML(){
+  const esc = (s) => escapeHtml(s);
+  const placemarks = exportPoints().map(p =>
+    '<Placemark><name>' + esc(p.name) + '</name>' +
+    '<description>' + esc(p.src) + ' · WGS84</description>' +
+    '<Point><coordinates>' + p.lon + ',' + p.lat + ',0</coordinates></Point></Placemark>');
+  if (measurePts.length >= 2){
+    const c = measurePts.map(p => p[1] + ',' + p[0] + ',0').join(' ');
+    const closed = measurePts.length >= 3;
+    placemarks.push('<Placemark><name>测量要素</name>' +
+      (closed ? '<Polygon><outerBoundaryIs><LinearRing><coordinates>' +
+                c + ' ' + measurePts[0][1] + ',' + measurePts[0][0] + ',0' +
+                '</coordinates></LinearRing></outerBoundaryIs></Polygon>'
+              : '<LineString><coordinates>' + c + '</coordinates></LineString>') +
+      '</Placemark>');
+  }
+  for (const g of importedFeatures){
+    if (g.geometry && g.geometry.type === 'Point'){
+      placemarks.push('<Placemark><name>' + esc((g.properties && g.properties.name) || '导入点')
+        + '</name><Point><coordinates>' + g.geometry.coordinates.join(',') +
+        ',0</coordinates></Point></Placemark>');
+    }
+  }
+  if (!placemarks.length){
+    toast('没有可导出的内容', { level:'warn', detail:'先查询或收藏几个点' });
+    return;
+  }
+  const kml = '<?xml version="1.0" encoding="UTF-8"?>\n' +
+    '<kml xmlns="http://www.opengis.net/kml/2.2"><Document>' +
+    '<name>UOM 适飞空域查询导出</name>' + placemarks.join('') + '</Document></kml>';
+  if (download('uom-points.kml', 'application/vnd.google-earth.kml+xml', kml)){
+    toast('已导出 KML', { level:'ok', detail: placemarks.length + ' 个要素' });
+  }
+}
+document.getElementById('ioExportGeo').onclick = exportGeoJSON;
+document.getElementById('ioExportKml').onclick = exportKML;
+
+/* 导入：GeoJSON 与 KML。点要素可以直接点查询；线/面仅显示。
+   导入的要素同时收进 importedFeatures（在上面声明），供导出时带上。 */
+function addImported(features, label){
+  importedFeatures = importedFeatures.concat(features);
+  if (importLayer){ map.removeLayer(importLayer); importLayer = null; }
+  const gj = { type:'FeatureCollection', features: features };
+  importLayer = L.geoJSON(gj, {
+    renderer: L.canvas({ padding: .5 }),
+    style: { color:'#2c5f5a', weight:2, opacity:.9, fillOpacity:.10 },
+    pointToLayer: (f, ll) => L.circleMarker(ll, { radius:5, color:'#fff', weight:2,
+                                                 fillColor:'#2c5f5a', fillOpacity:1 }),
+    onEachFeature: (f, layer) => {
+      const nm = (f.properties && f.properties.name) || '';
+      layer.bindTooltip(nm || label, { sticky:true });
+      layer.on('click', () => {
+        const ll = layer.getBounds ? layer.getBounds().getCenter() : layer.getLatLng();
+        if (f.geometry.type === 'Point'){
+          const w = mapToWgs(ll.lat, ll.lng);
+          queryAt(w[0], w[1]);
+        }
+      });
+    }
+  }).addTo(map);
+  if (features.length){
+    try { map.fitBounds(importLayer.getBounds().pad(.15)); } catch(e){}
+  }
+  toast('已导入', { level:'ok', detail: features.length + ' 个要素（' + label + '）' });
+  report('IMPORT_OK', { n: features.length, kind: label });
+}
+function parseKML(text){
+  const doc = new DOMParser().parseFromString(text, 'application/xml');
+  if (doc.querySelector('parsererror')) throw new Error('XML 解析失败，不是合法 KML');
+  const out = [];
+  for (const pm of doc.querySelectorAll('Placemark')){
+    const nmEl = pm.querySelector('name');
+    const name = nmEl ? nmEl.textContent.trim() : '';
+    const pt = pm.querySelector('Point > coordinates');
+    if (pt){
+      const c = pt.textContent.trim().split(',').map(Number);
+      if (isFinite(c[0]) && isFinite(c[1])){
+        out.push({ type:'Feature', geometry:{ type:'Point', coordinates:[c[0], c[1]] },
+                   properties:{ name: name } });
+      }
+      continue;
+    }
+    const ring = pm.querySelector('Polygon outerBoundaryIs LinearRing coordinates')
+              || pm.querySelector('LinearRing coordinates');
+    const line = pm.querySelector('LineString coordinates');
+    const src = ring || line;
+    if (src){
+      const coords = src.textContent.trim().split(/\s+/).map(s => {
+        const c = s.split(',').map(Number);
+        return [c[0], c[1]];
+      }).filter(c => isFinite(c[0]) && isFinite(c[1]));
+      if (coords.length >= 2){
+        out.push({ type:'Feature',
+          geometry: ring ? { type:'Polygon', coordinates:[coords] }
+                         : { type:'LineString', coordinates: coords },
+          properties:{ name: name } });
+      }
+    }
+  }
+  return out;
+}
+document.getElementById('ioImport').onchange = (e) => {
+  const file = e.target.files && e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      const text = String(reader.result);
+      const isKml = /\.kml$/i.test(file.name);
+      const features = isKml ? parseKML(text) : (JSON.parse(text).features || []);
+      if (!features.length) throw new Error('里面没有要素');
+      addImported(features, isKml ? 'KML' : 'GeoJSON');
+    } catch(err){
+      toast('导入失败', { level:'err', detail: (err && err.message) || String(err) });
+      report('IMPORT_FAIL', (err && err.message) || String(err));
+    }
+    e.target.value = '';                 // 允许重复导入同一个文件
+  };
+  reader.onerror = () => toast('读取文件失败', { level:'err' });
+  reader.readAsText(file);
+};
+
+/* ================================================================
+   线上版诊断（2.6）
+   原来"对比当前视野"和"底图代查"都依赖本地 Python 服务的 /diag/*，
+   线上站点没有这些端点，等于线上用户完全用不了。
+   这里用浏览器自身能力重做：
+     · 视野覆盖自检：枚举视野内 z13 瓦片，走 Worker 批量取数，统计有/无数据；
+       本地服务器在时再和服务端结果交叉比对，不一致就是 bug。
+     · 底图探活：用 Image() 试加载（拿不到状态码，但能判成败）。
+   ================================================================ */
+function viewTileList(z){
+  const b = map.getBounds();
+  const n = Math.pow(2, z);
+  const lngToX = (lon) => Math.floor((lon + 180) / 360 * n);
+  const latToY = (lat) => {
+    const r = lat * Math.PI / 180;
+    return Math.floor((1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2 * n);
+  };
+  const x0 = Math.max(0, lngToX(b.getWest())), x1 = Math.min(n - 1, lngToX(b.getEast()));
+  const y0 = Math.max(0, latToY(b.getNorth())), y1 = Math.min(n - 1, latToY(b.getSouth()));
+  const out = [];
+  for (let x = x0; x <= x1; x++)
+    for (let y = y0; y <= y1; y++) out.push([z, x, y]);
+  return out;
+}
+function probeOneImage(url, timeoutMs){
+  return new Promise(resolve => {
+    const img = new Image();
+    let done = false;
+    const fin = (ok) => { if (!done){ done = true; resolve(ok); } };
+    const t = setTimeout(() => fin(false), timeoutMs || 8000);
+    img.onload = () => { clearTimeout(t); fin(true); };
+    img.onerror = () => { clearTimeout(t); fin(false); };
+    img.src = url + (url.indexOf('?') >= 0 ? '&' : '?') + '_probe=' + Date.now();
+  });
+}
+async function diagViewOnline(){
+  /* 用【当前缩放】而不是固定 z13。
+     一个视口覆盖的瓦片数只取决于视口像素尺寸，与缩放级别基本无关（约 20~50 张）；
+     但如果固定用 z13、而地图停在 z8，同样一个视口要枚举的 z13 瓦片会多出
+     2^(13-8)² = 1024 倍 —— 实测直接把自检拖成"点了没反应"。
+     固定用 z13 只在这一个理由下才合理：想验证判定的那一层。那也该用
+     min(缩放, NATIVE_MAX_Z)，放大到 z14+ 时自然就落在 z13 上。 */
+  const z = Math.min(map.getZoom(), NATIVE_MAX_Z);
+  let tiles = viewTileList(z);
+  if (tiles.length > 200){
+    tiles = tiles.filter((t, i) => i % Math.ceil(tiles.length / 200) === 0);
+  }
+  if (!tiles.length) return '当前视野没有可检查的瓦片';
+  const have = [], lack = [], failed = [];
+  const CH = 40;
+  for (let i = 0; i < tiles.length; i += CH){
+    const chunk = tiles.slice(i, i + CH);
+    let resp;
+    try {
+      resp = await workerGetTileBatch(chunk);
+    } catch(e){
+      failed.push('批量取数失败：' + ((e && e.message) || e));
+      break;
+    }
+    resp.data.forEach((data, k) => {
+      if (data && data.byteLength) have.push(chunk[k]);
+      else lack.push(chunk[k]);
+    });
+    if (resp.errors && resp.errors.length){
+      failed.push('本批 ' + resp.errors.length + ' 块取数失败，例如 ' +
+        resp.errors[0].tile + '：' + resp.errors[0].msg);
+    }
+  }
+  const lines = [];
+  lines.push('视野瓦片自检 z' + z + '：共 ' + tiles.length +
+             '，有数据 ' + have.length + '，无数据 ' + lack.length);
+  /* 本地服务器在时做交叉比对：两边判定不一致就是取数链路的 bug */
+  if (window.__localServer){
+    try {
+      const x0 = Math.min.apply(null, tiles.map(t => t[1]));
+      const x1 = Math.max.apply(null, tiles.map(t => t[1]));
+      const y0 = Math.min.apply(null, tiles.map(t => t[2]));
+      const y1 = Math.max.apply(null, tiles.map(t => t[2]));
+      const r = await fetch('diag/view?z=' + z + '&x0=' + x0 + '&x1=' + x1 +
+                            '&y0=' + y0 + '&y1=' + y1, { cache:'no-store' });
+      const j = await r.json();
+      const serverHave = new Set(j.haveList || []);
+      let mismatch = 0;
+      for (const t of have){
+        if (serverHave.size && !serverHave.has(t[1] + '/' + t[2])) mismatch++;
+      }
+      lines.push('与服务端交叉比对：服务端说有 ' + (j.count != null ? j.count : '?') +
+                 '，不一致 ' + mismatch + (mismatch ? '  ← 取数链路可能有问题' : '  ✓'));
+    } catch(e){
+      lines.push('与服务端交叉比对失败：' + ((e && e.message) || e));
+    }
+  } else {
+    lines.push('（线上站点没有服务端，跳过交叉比对）');
+  }
+  /* Worker 的合并统计 */
+  if (workerStat){
+    lines.push('Worker 统计：批量 ' + (workerStat.batches || 0) + ' 次 / 瓦片 ' +
+      (workerStat.tiles || 0) + ' 张 / HTTP ' + (workerStat.ranges || 0) +
+      ' 个请求 / 平均 ' + (workerStat.avgMs || 0) + 'ms');
+  }
+  lines.push('适飞层计数：成功 ' + uomTiles + '，失败 ' + uomTileErrs +
+             '，无数据 ' + uomNoData + '，缓存 ' + tileStore.size);
+  if (failed.length){
+    lines.push.apply(lines, failed);
+    /* 失败原因也上报一份：自检输出只在页面上，排查时还是要落到日志里 */
+    for (const f of failed) report('SELFCHECK_FAIL', f);
+  }
+  return lines.join('\n');
+}
+async function diagBaseProbe(){
+  const cfg = currentBaseCfg(currentBaseKind());
+  const layer = baseLayer;
+  if (!cfg || cfg.key === 'none' || !layer) return '当前没有底图';
+  /* 取当前视野中心那一块瓦片的地址来试 */
+  const z = Math.min(map.getZoom(), 17);
+  const c = map.getCenter();
+  const n = Math.pow(2, z);
+  const x = Math.floor((c.lng + 180) / 360 * n);
+  const r = c.lat * Math.PI / 180;
+  const y = Math.floor((1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2 * n);
+  let url = null;
+  try {
+    const anyLayer = (layer.getLayers ? layer.getLayers()[0] : layer);
+    url = anyLayer.getTileUrl({ x: x, y: y, z: z });
+  } catch(e){}
+  if (!url) return '拿不到瓦片地址';
+  const ok = await probeOneImage(url, 8000);
+  const host = (url.match(/^https?:\/\/([^\/]+)/) || [])[1] || url.slice(0, 40);
+  report('BASE_PROBE_BROWSER', { host: host, ok: ok });
+  return '底图探活 ' + host + '：' + (ok ? '能加载 ✓' : '加载失败 ✗') +
+         '\n（线上只能用 Image 试加载，拿不到 HTTP 状态码）';
+}
+
+/* 拼一个"轻提示"式的诊断输出台 */
+function showDiag(text){
+  const out = document.getElementById('diagOut');
+  out.style.display = 'block';
+  out.value = text;
+  out.scrollTop = 0;
+}
 
 /* ---------------- 启动 ---------------- */
 document.getElementById('bdVer').textContent = BUILD;
@@ -2077,10 +4207,21 @@ if (window.PerformanceObserver){
   requestAnimationFrame(tick);
 })();
 
-/* 探测本地服务器在不在：/diag/view 只有本地 Python 服务有 */
+/* 探测本地服务器在不在：自检里的交叉比对需要它（线上没有则跳过） */
 fetch('diag/view?z=0&x0=0&x1=0&y0=0&y1=0', { cache: 'no-store' })
   .then(r => { window.__localServer = r.ok; })
   .catch(() => { window.__localServer = false; });
+
+/* ---------------- 左下角缩放与比例尺（1.8）----------------
+   原来 Leaflet 的缩放控件默认在左上角，正好被顶栏整个盖住，等于没有。
+   移到左下角，并加一个公制比例尺。 */
+L.control.zoom({ position: 'bottomleft', zoomInTitle: '放大', zoomOutTitle: '缩小' })
+  .addTo(map);
+L.control.scale({ position: 'bottomleft', imperial: false, maxWidth: 120 })
+  .addTo(map);
+
+/* 坐标系提示按需显示（隐藏过就不再自动弹） */
+syncCrsWarn();
 
 buildKeyInputs();
 buildBaseOptions();
@@ -2091,6 +4232,11 @@ if (CONFIG.keys.tdt){
      且是独立 CDN —— 天地图被限流时它不受影响 */
   setBase('esri_img');
 }
+renderFavs();
+
+/* 关于面板里的数据日期直接取自脚本常量，避免两处维护 */
+document.getElementById('aboutUomDate').textContent = UOM_DATA_DATE;
+document.getElementById('aboutDjiDate').textContent = DJI_DATA_DATE;
 
 /* 数据就绪后隐藏加载层；无论成败都要能继续用 */
 const hideLoading = () => { document.getElementById('loading').style.display = 'none'; };
@@ -2100,7 +4246,7 @@ if (uomLayer){
 } else {
   document.getElementById('loading').innerHTML =
     '<div style="color:#f87171">PMTiles 初始化失败</div>' +
-    '<div style="font-size:11px;margin-top:6px">' + (uomError || '请查看控制台') + '</div>';
+    '<div style="font-size:.6875rem;margin-top:.375rem">' + (uomError || '请查看控制台') + '</div>';
   setTimeout(hideLoading, 5000);
 }
 </script>

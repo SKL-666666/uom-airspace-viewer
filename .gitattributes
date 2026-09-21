@@ -1,0 +1,30 @@
+# 统一按 LF 存放文本文件。
+#
+# 理由：check_*.js / test_*.js / audit.js 都是按行做静态分析的 —— 行首锚点
+# （例如 ^map\.on\('click'）和报出来的行号。Windows 上 git 的默认配置
+# core.autocrlf=true 会把检出内容转成 CRLF，同一份代码在不同机器上锚点行为
+# 与行号就不一致，排查问题时非常折磨。显式声明一次，省掉这类"只有某台机器上
+# 才复现"的怪事。
+#
+# 注意：这里只声明文本文件的换行策略，不改变任何数据内容。
+
+* text=auto eol=lf
+
+# 二进制产物：明确标出来，避免 git 尝试做换行或差异处理
+*.pmtiles  binary
+*.png      binary
+*.jpg      binary
+*.jpeg     binary
+*.webp     binary
+*.ico      binary
+*.exe      binary
+*.apk      binary
+*.hap      binary
+*.jks      binary
+*.keystore binary
+*.zip      binary
+*.woff     binary
+*.woff2    binary
+
+# 大体积数据文件：是 JSON 文本，但没必要参与换行归一化的开销
+data/*.geojson text eol=lf
