@@ -339,9 +339,67 @@ BODY_INJECT = """<script>
       // 在线地理编码（有无 tk 都要能优雅收场）
       searchInput.value = '首都机场';
       searchInput.dispatchEvent(new Event('input', { bubbles: true }));
-      await sleep(4000);
+      // 先确认防抖确实触发了
+      await sleep(200);
+      log('debounce_pending', searchDebounce ? 'yes' : 'no');
+      /* 不能一看到 .sempty 就断言"搜完了" —— 那是 loading 中间态。
+         必须等到出现真正的 .sres 行，或者等到搜索真的结束
+         （runSearch 结束后：有 sres，或有 sempty 但【没有 .on 之外的中间态】）。
+         这里用"输入值未变 + debounce 已结束 + 没有 pending 的查询"来判定。 */
+      await waitFor(function(){
+        return document.querySelectorAll('#searchResults .sres').length > 0;
+      }, 15000);
       log('geo_rows', document.querySelectorAll('#searchResults .sres').length);
-      log('geo_note', q('#searchResults .sempty') ? q('#searchResults .sempty').textContent.slice(0, 120) : 'NONE');
+      log('geo_note', q('#searchResults .sempty') ? q('#searchResults .sempty').textContent.slice(0, 160) : 'NONE');
+      /* 有内容就必须可见 —— 这是这次的核心缺陷，单独断言 */
+      var boxEl = q('#searchResults');
+      if (boxEl && boxEl.innerHTML.length > 0){
+        log('box_visible_when_filled',
+            getComputedStyle(boxEl).display !== 'none');
+      } else {
+        log('box_visible_when_filled', 'skip(empty)');
+      }
+      log('geo_box_on', q('#searchResults').classList.contains('on'));
+      log('geo_cache_size', geoCache ? geoCache.size : 'NO');
+      /* 直接跑一遍 runSearch 并观察各中间量 —— 与诊断按钮走的是不同路径，
+         两条路径一个通一个不通时，必须把这条路径的每一步都摊开。 */
+      try {
+        const r = await geoSearch('首都机场');
+        log('geoSearch_items', r.items.length);
+        log('geoSearch_used', r.used || 'NONE');
+        log('geoSearch_errors', (r.errors || []).join(' | ').slice(0, 200));
+        log('geoSearch_noneCfg', !!r.noneConfigured);
+      } catch(e){ log('geoSearch_THROW', (e && e.message) || e); }
+      try {
+        const loc = localSearch('首都机场');
+        log('localSearch_n', loc.length);
+      } catch(e){ log('localSearch_THROW', (e && e.message) || e); }
+      /* 关键：直接问"真实输入触发的那一次"到底渲染了什么。
+         renderSearch 会写 innerHTML；如果它是空的，说明输入回调根本没跑到那里。 */
+      log('box_html_len', q('#searchResults') ? q('#searchResults').innerHTML.length : 'NO');
+      log('box_class', q('#searchResults') ? q('#searchResults').className : 'NO');
+      /* 走一遍真实的 renderSearch（本地结果 + 在线结果都要能正确显示） */
+      renderSearch([{ kind:'geo', name:'测试地点', lat:39.9, lon:116.4, addr:'北京市' }], null);
+      log('render_online_visible', getComputedStyle(q('#searchResults')).display !== 'none');
+      log('render_online_rows', document.querySelectorAll('#searchResults .sres').length);
+      log('render_online_addr', q('#searchResults .sr-d') ? q('#searchResults .sr-d').textContent : 'NONE');
+      closeSearch();
+      log('render_closed_after_close', getComputedStyle(q('#searchResults')).display === 'none');
+      log('box_display', q('#searchResults') ? getComputedStyle(q('#searchResults')).display : 'NO');
+      log('searchItems_len', typeof searchItems !== 'undefined' ? searchItems.length : 'NO');
+      log('searchInput_value', searchInput.value);
+      log('searchClear_hidden', document.getElementById('searchClear').hidden);
+      log('topbar_display', getComputedStyle(q('#topbar')).display);
+      log('topbar_z', getComputedStyle(q('#topbar')).zIndex);
+      log('box_z', q('#searchResults') ? getComputedStyle(q('#searchResults')).zIndex : 'NO');
+      log('topbar_in_doc', !!q('#topbar'));
+      /* 再走一次完整的 runSearch，看渲染这一步 */
+      try {
+        await runSearch('首都机场');
+        await sleep(500);
+        log('after_runSearch_rows', document.querySelectorAll('#searchResults .sres').length);
+        log('after_runSearch_note', q('#searchResults .sempty') ? q('#searchResults .sempty').textContent.slice(0, 160) : 'NONE');
+      } catch(e){ log('runSearch_THROW', (e && e.message) || e); }
     });
 
     // ---- 12b. 地名搜索连通性测试（无头环境没有 key，应正确报告"未配置"）----
