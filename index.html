@@ -150,7 +150,9 @@
   .sres .sr-k{flex:none;font-size:.625rem;padding:.0625rem .375rem;border-radius:var(--r-sm);
               background:var(--panel3);color:var(--tx2)}
   .sres .sr-n{flex:1 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .sres .sr-d{flex:none;color:var(--tx2);font-size:.6875rem}
+  .sres .sr-d{flex:0 1 auto;min-width:0;color:var(--tx2);font-size:.6875rem;
+              overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:45%}
+  .sres .sr-n{min-width:0}
   .sempty{padding:.75rem .625rem;color:var(--tx2);font-size:.75rem;text-align:center}
 
   /* ---------- 右侧竖工具条 ---------- */
@@ -4385,7 +4387,8 @@ async function diagGeoTest(){
     lines.push('只有「坐标」和「行政区名」能在离线状态下检索。');
   }
   lines.push('');
-  lines.push('—— 若下面这条报"成功"，说明解析已修好 ——');
+  lines.push('说明：count 是总命中数，pois 只是本次请求的前 N 条（分页），');
+  lines.push('      两者不相等是正常的，不代表丢数据。');
   lines.push('');
   lines.push('—— 天地图原始返回结构（key 已脱敏）——');
   try { lines.push(await tdtRawDump(kw)); }
