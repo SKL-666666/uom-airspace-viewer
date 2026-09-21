@@ -74,14 +74,27 @@ console.log('— 1. 天地图 postStr 必须限定搜索空间（这次线上就
      'level 与 mapBound 至少给了一个（否则接口报 infocode 2003）');
 }
 
-console.log('\n— 2. level 跟随当前缩放（不是写死的）—');
+console.log('\n— 2. 视野取不到时，level 退回用缩放级别 —');
 {
-  fakeMap._z = 5;  ok(post('x').level === 5, '缩放 5 -> level 5');
+  /* level 的首选来源是 mapBound 的跨度（见第 8 节）：地图缩放级别和实际可见
+     范围在中文底图上经常对不上。只有拿不到视野时才退回用缩放。
+     两个来源都要能工作，也都要夹在 1~18。 */
+  const saved = fakeMap.getBounds;
+  fakeMap.getBounds = function(){ throw new Error('还没初始化'); };
+
+  fakeMap._z = 5;  ok(post('x').level === 5, '拿不到视野时：缩放 5 -> level 5');
   fakeMap._z = 18; ok(post('x').level === 18, '缩放 18 -> level 18');
   fakeMap._z = 22; ok(post('x').level === 18, '缩放 22 被夹到 18（值域上限）');
   /* 缩放 0 是合法值但 falsy —— 用 || 兜底会把它误改成 12，这条就是防它的 */
   fakeMap._z = 0;  ok(post('x').level === 1, '缩放 0 被夹到 1（不是被误设成 12）');
+
+  fakeMap.getBounds = saved;
   fakeMap._z = 12;
+  /* 有视野时必须优先按 mapBound 推 level，而不是照抄缩放级别 */
+  fakeMap._b = makeBounds(63.0, 14.7, 147.0, 52.0);
+  ok(post('x').level !== 12,
+     '有视野时不再照抄缩放级别 12（实际 level ' + post('x').level + '）');
+  fakeMap._b = makeBounds(115.9, 39.5, 116.9, 40.3);
 }
 
 console.log('\n— 3. mapBound 取自当前视野 —');
@@ -179,6 +192,49 @@ console.log('\n— 7. pickLonLat：吃下天地图真实返回的 lonlat 合并�
   ok(pickLonLat({ lonlat: 'abc' }) === null, '畸形 lonlat -> null');
   ok(pickLonLat({}) === null, '空对象 -> null');
   ok(pickLonLat(null) === null, 'null -> null');
+}
+
+console.log('\n— 8. level 必须与 mapBound 自洽 —');
+{
+  /* 实测到过一次矛盾组合：level 5 配 mapBound 63.0,14.7,147.0,52.1（东亚整片）。
+     北京(116.4,39.9) 并不在那个范围里 —— 能搜到纯属运气。原因是我把地图缩放
+     级别直接当 level，而中文底图在缩放 5 时的可见范围远大于
+     '缩放级别 × 视口尺寸'。现在 level 由 mapBound 跨度反推。
+   */
+  const cases = [
+    [{ west: 114.87, south: 38.13, east: 117.49, north: 39.26 }, '城市级视野'],
+    [{ west: 63.0,   south: 14.7,  east: 147.0,  north: 52.0 }, '东亚整片视野'],
+    [{ west: 73.0,   south: 3.8,   east: 135.1,  north: 53.6 }, '全国视野'],
+  ];
+  const levels = [];
+  for (const [b, label] of cases){
+    fakeMap._b = makeBounds(b.west, b.south, b.east, b.north);
+    const p = post('x');
+    levels.push(p.level);
+    ok(p.level >= 1 && p.level <= 18, label + ' -> level ' + p.level + ' 在值域内');
+    /* 自洽性：按 level 算出来的经度分辨率，不能比视野跨度还粗 */
+    const spanLon = b.east - b.west;
+    const cellAtLevel = 360 / Math.pow(2, p.level);
+    ok(cellAtLevel <= spanLon * 1.5,
+       label + '：level ' + p.level + ' 的格子 ' + cellAtLevel.toFixed(2)
+       + '° 与跨度 ' + spanLon.toFixed(2) + '° 相称');
+  }
+  /* 单调性：视野经度跨度越大，level 越小。
+     注意不能按数组下标比 —— 上面三个用例里"东亚整片"的经度跨度(84°)
+     比"全国"(62.1°)还大，所以它的 level 更小是【正确】的。
+     测试数据本身要按跨度排序，否则是在测一个不成立的前提。 */
+  const spans = cases.map(([b]) => b.east - b.west);
+  const bySpan = cases.map((c, i) => ({ span: spans[i], level: levels[i] }))
+                      .sort((x, y) => x.span - y.span);
+  let mono = true;
+  for (let i = 1; i < bySpan.length; i++){
+    if (!(bySpan[i].level <= bySpan[i - 1].level)) mono = false;
+  }
+  ok(mono, '跨度越大 level 越小：' +
+     bySpan.map(v => v.span.toFixed(1) + '°/' + v.level).join('  '));
+  ok(levels[0] === Math.max.apply(null, levels),
+     '最小视野拿到最大 level（城市级 ' + levels[0] + '）');
+  fakeMap._b = makeBounds(115.9, 39.5, 116.9, 40.3);
 }
 
 process.exit(A.done());

@@ -797,7 +797,7 @@
    alpha 严格为 0 或 255，无抗锯齿中间值，因此判定无歧义。
    瓦片缺失 ⇒ 该区域无适飞空域。 */
 /* 构建标识：用来确认浏览器实际加载的是哪一版，排查缓存问题 */
-const BUILD = 'v17.1';
+const BUILD = 'v17.2';
 
 /* 加载层兜底：放在脚本最前面注册。
    之前把它放在末尾，一旦中间某处抛错就永远不执行，页面会卡死在
@@ -3163,15 +3163,32 @@ function tdtPostStr(kw, extra){
                 clamp(b.getEast(), -180, 180), clamp(b.getNorth(), -90, 90)]
                .map(v => v.toFixed(6)).join(',');
   } catch(e){ mapBound = ''; }
-  /* 注意别写 Math.round(z) || 12 —— 缩放级别 0 是合法值，
-     而 0 是 falsy，会被 || 顺手改成 12。判 NaN 要显式来。 */
-  const z = map.getZoom();
+  /* level 和 mapBound 必须【互相自洽】，否则天地图可能把结果限定在
+     mapBound 之外或之内，出现"搜得到/搜不到全看运气"。实测过一次矛盾组合：
+       level: 5，mapBound: 63.0,14.7,147.0,52.1（东亚整片，不含北京）
+     地图缩放级别 5 却有这么大的视野，是中文底图的常见情形 —— 可见范围远大于
+     "缩放级别 × 视口尺寸"。所以不能直接拿地图缩放当 level。
+
+     做法：从 mapBound 的跨度反推一个匹配的 level，保证两者说的是同一件事。
+     经度每 360° 分 2^level 份，取跨度的对数即可；再夹到 1~18。
+     注意别写 Math.round(z) || 12 —— 缩放 0 是合法值却是 falsy，会被 || 改成 12。 */
+  let level = 12;
+  if (mapBound){
+    const b = mapBound.split(',').map(Number);
+    const spanLon = Math.abs(b[2] - b[0]);
+    if (isFinite(spanLon) && spanLon > 0){
+      level = Math.round(Math.log2(360 / Math.min(spanLon, 360)));
+    }
+  } else {
+    const z = map.getZoom();
+    level = isFinite(z) ? Math.round(z) : 12;
+  }
   const body = {
     keyWord: kw,
     queryType: 1,                 // 1 = 普通搜索
     start: 0,
     count: 8,
-    level: clamp(isFinite(z) ? Math.round(z) : 12, 1, 18),
+    level: clamp(level, 1, 18),
   };
   if (mapBound) body.mapBound = mapBound;
   return Object.assign(body, extra || {});
