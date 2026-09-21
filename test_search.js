@@ -238,4 +238,25 @@ console.log('\n— 8. level 必须与 mapBound 自洽 —');
   fakeMap._b = makeBounds(115.9, 39.5, 116.9, 40.3);
 }
 
+console.log('\n— 10. pickLonLat 兜底：字段名没见过也要能认 —');
+{
+  /* 实测：同一个接口，关键词「首都机场」返回的条目带 lonlat 能解析，
+     而命中数更多的宽关键词，条目一条都解析不出来 —— 说明那种条目用了
+     别的字段名。写死字段名总会漏，所以留一条按【内容】认的路。 */
+  const r1 = pickLonLat({ name:'某地', whateverField:'116.406,40.072' });
+  ok(!!r1 && Math.abs(r1.lon - 116.406) < 1e-6, '未知字段名的 "经,纬" 字符串');
+  const r2 = pickLonLat({ name:'某地', someArray:[116.406, 40.072] });
+  ok(!!r2 && Math.abs(r2.lat - 40.072) < 1e-6, '未知字段名的数组');
+  const r3 = pickLonLat({ name:'某地', pair:'40.072,116.406' });
+  ok(!!r3 && Math.abs(r3.lon - 116.406) < 1e-6, '顺序反了也能纠正（|>90 的是经度）');
+  /* 关键：不能瞎认。这些都不是坐标，必须返回 null，否则会把无关数值当位置 */
+  ok(pickLonLat({ name:'某地', count:'2196' }) === null, '单个数字不算坐标');
+  ok(pickLonLat({ name:'某地', code:'1,2' }) === null, '不在中国范围内的数字对不算坐标');
+  ok(pickLonLat({ name:'某地', tel:'010,8888' }) === null, '号码不算坐标');
+  ok(pickLonLat({ name:'某地', note:'12.5,13.7' }) === null, '境外范围的数字对不算坐标');
+  /* 已知字段名优先，且不受范围限制（境外 POI 也要能用已知字段解析） */
+  const r4 = pickLonLat({ lonlat:'139.7,35.6' });
+  ok(!!r4 && Math.abs(r4.lat - 35.6) < 1e-6, '已知字段名不受境内范围限制（境外点也能用）');
+}
+
 process.exit(A.done());

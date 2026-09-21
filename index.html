@@ -802,7 +802,7 @@
    alpha 严格为 0 或 255，无抗锯齿中间值，因此判定无歧义。
    瓦片缺失 ⇒ 该区域无适飞空域。 */
 /* 构建标识：用来确认浏览器实际加载的是哪一版，排查缓存问题 */
-const BUILD = 'v17.7';
+const BUILD = 'v17.8';
 
 /* 加载层兜底：放在脚本最前面注册。
    之前把它放在末尾，一旦中间某处抛错就永远不执行，页面会卡死在
@@ -3152,7 +3152,33 @@ function pickLonLat(o){
   }
   const lon = pickNum(o, ['lon', 'lng', 'longitude', 'LON']);
   const lat = pickNum(o, ['lat', 'latitude', 'LAT']);
-  return (isFinite(lon) && isFinite(lat)) ? { lon: lon, lat: lat } : null;
+  if (isFinite(lon) && isFinite(lat)) return { lon: lon, lat: lat };
+
+  /* 兜底：字段名没见过时，扫一遍这条记录所有的字符串/数组字段，
+     找形如 "纬度,经度" 的一对数字。
+     起因：同一个接口，关键词「首都机场」返回的 POI 带 lonlat 能解析，
+     而更宽的关键词（命中数更多）返回的条目一条都解析不出来 ——
+     说明那种条目用了别的字段名。写死字段名总会漏，所以留一条按内容认的路。
+     约束放宽到"看起来像中国境内的经纬度"，避免把 "1,2" 这种无关数值当坐标。 */
+  if (o && typeof o === 'object'){
+    for (const k in o){
+      if (k === 'id' || k === 'phone' || k === 'hotPointID') continue;
+      const v = o[k];
+      let a2 = NaN, b2 = NaN;
+      if (typeof v === 'string' && v.indexOf(',') > 0){
+        const parts = v.split(',');
+        a2 = parseFloat(parts[0]); b2 = parseFloat(parts[1]);
+      } else if (Array.isArray(v) && v.length >= 2){
+        a2 = parseFloat(v[0]); b2 = parseFloat(v[1]);
+      } else continue;
+      if (!isFinite(a2) || !isFinite(b2)) continue;
+      /* 定序：|值|>90 的是经度 */
+      let lo = a2, la = b2;
+      if (Math.abs(a2) <= 90 && Math.abs(b2) > 90){ lo = b2; la = a2; }
+      if (lo > 70 && lo < 141 && la > 0 && la < 56) return { lon: lo, lat: la };
+    }
+  }
+  return null;
 }
 /* 每个地理编码通道返回 [{lat, lon, name}]，坐标一律先换算成 WGS84 再交出去 ——
    下游（判定、标记、收藏、导出）只认 WGS84，换算必须在边界处一次做完。
@@ -3275,7 +3301,47 @@ async function geoTianditu(kw, extra, retried){
     topKeys: j ? Object.keys(j).join(',') : '',
     arrSizes: arrSizes.join(','), used: chosen || '', firstItemKeys: firstItemKeys
   });
+  /* 有命中却一条都解析不出来 —— 这不是"没有结果"，而是我们没认出返回结构。
+     实测过这种情形：同一个解析函数，关键词「首都机场」能出 8 条，
+     而更宽的关键词（命中数更多）一条都出不来，说明那种响应里字段不一样。
+     这时唯一有用的是"看清真实结构"，所以在失败路径上把它记下来，
+     并且把它带进错误信息 —— 用户不必再点诊断、我也不必再猜。 */
+  if (!out.length && tdtLastCount > 0){
+    const first = firstObjectIn(j);
+    const info = {
+      kw: kw, count: tdtLastCount, resultType: j && j.resultType,
+      topKeys: j ? Object.keys(j).join(',') : '',
+      arrSizes: arrSizes.join(','),
+      firstKeys: first ? Object.keys(first).join(',') : '(没有对象元素)',
+      /* 只留前 400 字符：够看出字段名和值的形状，又不会把日志撑爆 */
+      firstSample: first ? JSON.stringify(first).slice(0, 400) : ''
+    };
+    report('GEO_TDT_UNPARSED', info);
+    const err = new Error('天地图：命中 ' + tdtLastCount + ' 条但认不出结构。'
+      + '首条字段：' + info.firstKeys + '　样本：' + info.firstSample.slice(0, 160));
+    err.detail = info;
+    throw err;
+  }
   return out;
+}
+
+/* 从响应里挑出第一个"对象元素"，用来展示真实字段。
+   只用于诊断，不参与解析，所以尽量宽松。 */
+function firstObjectIn(j){
+  if (!j || typeof j !== 'object') return null;
+  const tryArr = (v) => Array.isArray(v)
+    ? v.find(x => x && typeof x === 'object' && !Array.isArray(x)) : null;
+  for (const k of ['pois', 'poiList', 'result', 'data', 'list', 'items']){
+    const hit = tryArr(j[k]);
+    if (hit) return hit;
+  }
+  if (j.data && typeof j.data === 'object'){
+    for (const k of ['pois', 'poiList', 'result', 'list', 'items']){
+      const hit = tryArr(j.data[k]);
+      if (hit) return hit;
+    }
+  }
+  return null;
 }
 
 /* 从天地图响应里取出 POI 列表。抽成独立函数是为了能单独测、也为了把
@@ -4442,7 +4508,12 @@ async function tdtRawDump(kw){
    只显示"搜索失败"等于什么都没说。这里一次把每条通道的真实返回摊开。
    注意：只报 key 的【存在性与长度】，绝不打印 key 内容。 */
 async function diagGeoTest(){
-  const kw = '首都机场';
+  /* 优先用搜索框里当前的词 —— 出问题的往往是某个特定的关键词，
+     写死"首都机场"就复现不了（实测：同一个解析函数，「首都机场」能出 8 条，
+     而命中数更多的宽关键词一条都出不来）。 */
+  const typed = (typeof searchInput !== 'undefined' && searchInput && searchInput.value)
+    ? searchInput.value.trim() : '';
+  const kw = typed || '首都机场';
   const lines = ['地名搜索连通性测试（关键词：' + kw + '）', ''];
   lines.push('天地图 tk：' + (CONFIG.keys.tdt
     ? '已配置（' + CONFIG.keys.tdt.length + ' 字符）' : '未配置'));
