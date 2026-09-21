@@ -353,6 +353,11 @@ BODY_INJECT = """<script>
       log('geotest_lines', t.split(String.fromCharCode(10)).slice(0, 5).join(' ~ '));
       log('geotest_mentions_nokey', /未配置 key|都没配 key/.test(t));
       log('geotest_no_key_leak', /[A-Za-z0-9]{24,}/.test(t) ? 'LEAK?' : 'ok');
+      log('geotest_has_shape_dump', /原始返回结构/.test(t));
+      var dump = '';
+      try { dump = await tdtRawDump('首都机场'); } catch(e){ dump = 'ERR ' + e.message; }
+      log('shapedump', String(dump).split(String.fromCharCode(10)).join(' ~ ').slice(0, 300));
+      report('PROBE_SHAPEDUMP', String(dump).slice(0, 1500));
     });
 
     // ---- 13. 定位错误分类（2.2）+ 剪贴板（2.9）----

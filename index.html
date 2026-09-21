@@ -3143,6 +3143,9 @@ function tdtPostStr(kw, extra){
 /* 这类接口的参数要求常和文档不一致，靠猜没用、靠用户来回试更糟。
    好在它会把缺的参数名报出来（cndesc），所以：缺什么就补一个合理默认再试一次。
    只重试一次，避免真出问题时在这里转圈。 */
+/* 最近一次天地图返回的命中条数：用来区分“真没结果”和“结构没认出来” */
+let tdtLastCount = 0;
+
 const TDT_PARAM_FALLBACK = {
   level: 12,
   mapBound: '73.5,3.8,135.1,53.6',      // 全国范围
@@ -3178,15 +3181,59 @@ async function geoTianditu(kw, extra, retried){
     }
   }
   if (cndesc) throw new Error('天地图：' + cndesc + '（' + (st.infocode || '') + '）');
-  const pois = (j && (j.pois || (j.data && j.data.pois) || j.result)) || [];
-  report('GEO_TDT', { n: pois.length, count: j && j.count,
-                      keys: Object.keys(j || {}).join(',') });
-  return pois.map(p => {
-    const lon = pickNum(p, ['lon', 'lng', 'LON']), lat = pickNum(p, ['lat', 'LAT']);
-    if (!isFinite(lon) || !isFinite(lat)) return null;
-    return { kind:'geo', src:'天地图', lat: lat, lon: lon,
-             name: p.name || p.address || kw };
-  }).filter(Boolean);
+  /* 响应结构按“到处找”来做，不写死一个字段名。
+     教训：这个接口不同版本的返回字段并不一致（pois / poiList / result /
+     data.pois 都出现过）。只认 pois 一个名字时，接口明明返回 1000（服务正常），
+     却会解析出 0 条，症状和“搜不出来”完全一样。
+     数组按【形状】认而不是按名字认：任何元素里带得上经纬度的数组都收进来。 */
+  const cand = [];
+  const pushArr = (v, from) => {
+    if (Array.isArray(v) && v.length && v.some(x => x && typeof x === 'object')){
+      cand.push({ from: from, arr: v });
+    }
+  };
+  if (j){
+    pushArr(j.pois, 'pois');
+    pushArr(j.poiList, 'poiList');
+    pushArr(j.result, 'result');
+    pushArr(j.data, 'data');
+    if (j.data && typeof j.data === 'object'){
+      pushArr(j.data.pois, 'data.pois');
+      pushArr(j.data.poiList, 'data.poiList');
+      pushArr(j.data.result, 'data.result');
+    }
+  }
+  const LON_KEYS = ['lon', 'lng', 'longitude', 'LON'];
+  const LAT_KEYS = ['lat', 'latitude', 'LAT'];
+  const NAME_KEYS = ['name', 'NAME', 'address', 'addr', 'title', 'keyWord'];
+  let chosen = null, out = [], arrSizes = [], firstItemKeys = '';
+  for (const c of cand){
+    arrSizes.push(c.from + '=' + c.arr.length);
+    const rows = c.arr.map(x => {
+      const lon = pickNum(x, LON_KEYS), lat = pickNum(x, LAT_KEYS);
+      if (!isFinite(lon) || !isFinite(lat)) return null;
+      let name = '';
+      for (const k of NAME_KEYS){ if (x[k]) { name = String(x[k]); break; } }
+      return { kind:'geo', src:'天地图', lat: lat, lon: lon, name: name || kw };
+    }).filter(Boolean);
+    if (rows.length){
+      chosen = c.from; out = rows;
+      const first = c.arr.find(x => x && typeof x === 'object');
+      firstItemKeys = first ? Object.keys(first).join(',') : '';
+      break;
+    }
+  }
+  tdtLastCount = (j && typeof j.count === 'number') ? j.count : 0;
+  /* 把真实结构上报出来：万一还是解析不出坐标，日志里能看到到底长什么样，
+     不必再让用户来回试。只在有异常时多写几个字段，正常情况就一行。 */
+  report('GEO_TDT', {
+    n: out.length, count: j && j.count,
+    topKeys: j ? Object.keys(j).join(',') : '',
+    dataKeys: (j && j.data && typeof j.data === 'object')
+      ? Object.keys(j.data).join(',') : '',
+    arrSizes: arrSizes.join(','), used: chosen || '', firstItemKeys: firstItemKeys
+  });
+  return out;
 }
 
 /* 高德 Web 服务。实测 restapi.amap.com 返回 Access-Control-Allow-Origin: *，
@@ -3239,7 +3286,10 @@ async function geoSearch(kw){
     try {
       const items = await p.run(kw);
       if (items.length) return { items: items, used: p.label, errors: errors };
-      errors.push(p.label + '：没有匹配结果');
+      errors.push(p.label + '：' + (
+        (p.id === 'tdt' && tdtLastCount > 0)
+          ? '接口说命中 ' + tdtLastCount + ' 条，但解析不出坐标'
+          : '没有匹配结果'));
     } catch(e){
       errors.push((e && e.message) || String(e));
     }
@@ -4197,6 +4247,54 @@ async function diagBaseProbe(){
          '\n（线上只能用 Image 试加载，拿不到 HTTP 状态码）';
 }
 
+/* 把天地图原始返回的结构摊开（key 已去掉），用来一次定位"解析不出来"的原因。
+   为什么要有它：接口返回 1000（服务正常）却一条都解析不出来时，只差"看到真实
+   结构"这一步；靠文档（该站点 http/https 互相重定向，抓不到）和靠猜都不靠谱。 */
+function describeShape(v, depth, maxDepth){
+  depth = depth || 0;
+  if (v === null || v === undefined) return String(v);
+  if (Array.isArray(v)){
+    if (!v.length) return '[]';
+    return '[' + v.length + ' 项] ' + describeShape(v[0], depth + 1, maxDepth);
+  }
+  if (typeof v === 'object'){
+    if (depth >= (maxDepth || 2)) return '{' + Object.keys(v).join(',') + '}';
+    return '{' + Object.keys(v).map(k =>
+      k + ': ' + describeShape(v[k], depth + 1, maxDepth)).join(', ') + '}';
+  }
+  return typeof v;
+}
+async function tdtRawDump(kw){
+  const tk = CONFIG.keys.tdt;
+  if (!tk) return '（未配置天地图 tk）';
+  const url = 'https://api.tianditu.gov.cn/v2/search?postStr=' +
+    encodeURIComponent(JSON.stringify(tdtPostStr(kw))) +
+    '&type=query&tk=' + encodeURIComponent(tk);
+  let text = '';
+  try {
+    const r = await fetch(url, { cache: 'no-store' });
+    text = await r.text();
+  } catch(e){
+    return '请求失败：' + ((e && e.message) || e);
+  }
+  /* 先脱敏再展示：接口偶尔会把 tk 回显在错误信息里，绝不能进诊断输出 */
+  const safe = text.split(tk).join('***');
+  let j = null;
+  try { j = JSON.parse(safe); } catch(e){}
+  const lines = [];
+  lines.push('原始返回长度 ' + safe.length + ' 字节');
+  if (j){
+    lines.push('结构：' + describeShape(j, 0, 2));
+    lines.push('顶层字段：' + Object.keys(j).join(', '));
+    if (j.status) lines.push('status：' + JSON.stringify(j.status));
+    if (typeof j.count !== 'undefined') lines.push('count：' + j.count);
+    if (typeof j.resultType !== 'undefined') lines.push('resultType：' + j.resultType);
+  } else {
+    lines.push('不是合法 JSON，前 300 字：' + safe.slice(0, 300));
+  }
+  return lines.join('\n');
+}
+
 /* 逐个通道实测地名搜索，把每个通道自己的原话打出来。
    为什么需要它：搜索结果为空时，可能的原因有五六种（没配 key、key 非法、
    没开通「地名搜索」服务、referer 白名单不含当前网址、被限流、网络不通），
@@ -4245,6 +4343,10 @@ async function diagGeoTest(){
     lines.push('两个通道都没配 key，在线搜索无法工作。');
     lines.push('只有「坐标」和「行政区名」能在离线状态下检索。');
   }
+  lines.push('');
+  lines.push('—— 天地图原始返回结构（key 已脱敏）——');
+  try { lines.push(await tdtRawDump(kw)); }
+  catch(e){ lines.push('取原始返回失败：' + ((e && e.message) || e)); }
   lines.push('');
   lines.push('常见结论对照：');
   lines.push('  非法key / 请重新申请Key  -> 去天地图控制台核对这个 tk');
