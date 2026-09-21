@@ -344,6 +344,17 @@ BODY_INJECT = """<script>
       log('geo_note', q('#searchResults .sempty') ? q('#searchResults .sempty').textContent.slice(0, 120) : 'NONE');
     });
 
+    // ---- 12b. 地名搜索连通性测试（无头环境没有 key，应正确报告"未配置"）----
+    await step('geotest', async function(){
+      q('#diagGeo').click();
+      await waitFor(function(){ return q('#diagOut') && q('#diagOut').value.length > 0; }, 30000);
+      var t = q('#diagOut') ? q('#diagOut').value : '';
+      log('geotest_shown', t.length > 0);
+      log('geotest_lines', t.split(String.fromCharCode(10)).slice(0, 5).join(' ~ '));
+      log('geotest_mentions_nokey', /未配置 key|都没配 key/.test(t));
+      log('geotest_no_key_leak', /[A-Za-z0-9]{24,}/.test(t) ? 'LEAK?' : 'ok');
+    });
+
     // ---- 13. 定位错误分类（2.2）+ 剪贴板（2.9）----
     await step('geo_clip', async function(){
       log('secure_context', window.isSecureContext);
