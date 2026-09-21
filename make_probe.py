@@ -365,34 +365,71 @@ BODY_INJECT = """<script>
       CONFIG.keys.tdt = '';
     });
 
-    // ---- 12b1. 内置地点：离线也必须能搜到 ----
-    await step('search_builtin', async function(){
-      CONFIG.keys.tdt = '';           // 刻意清掉 key，模拟在线通道不可用
+    // ---- 12b0. 中文输入法：组字期间不能搜拼音 ----
+    // 这是"诊断能搜到、搜索框搜不到"的根因所在：
+    // 用拼音打字时输入框的值先是拼音，若不区分就会拿拼音去在线搜 → 0 条。
+    await step('search_ime', async function(){
+      var REAL = {
+        count: 958, resultType: 1, lineData: [], keyWord: '首都机场',
+        status: { cndesc:'服务正常', infocode: 1000 },
+        pois: [{ address:'北京市顺义区', name:'首都机场', lonlat:'116.406621,40.072647' }]
+      };
+      CONFIG.keys.tdt = 'FAKE_TK_FOR_PROBE______________';
+      var realFetch = window.fetch;
+      var queries = [];
+      window.fetch = function(u){
+        if (String(u).indexOf('tianditu') >= 0){
+          var q = decodeURIComponent(String(u).split('postStr=')[1].split('&')[0]);
+          try { queries.push(JSON.parse(q).keyWord); } catch(e){ queries.push('?'); }
+          return Promise.resolve({ ok:true, status:200,
+            text: function(){ return Promise.resolve(JSON.stringify(REAL)); } });
+        }
+        return realFetch.apply(this, arguments);
+      };
       geoCache.clear();
+      closeSearch();
       searchInput.value = '';
-      searchInput.dispatchEvent(new Event('input', { bubbles: true }));
+
+      // ① 模拟拼音组字：compositionstart -> 值变成拼音 -> input(isComposing)
+      searchInput.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+      searchInput.value = 'shoudujichang';
+      searchInput.dispatchEvent(new CompositionEvent('input',
+        { bubbles: true, isComposing: true }));
+      await sleep(600);                       // 超过防抖时间，看会不会去搜拼音
+      log('ime_queries_during_compose', queries.length);
+      log('ime_no_pinyin_query', queries.indexOf('shoudujichang') < 0);
+      log('ime_box_hidden_while_composing',
+          getComputedStyle(q('#searchResults')).display === 'none');
+
+      // ② 组字期间按 Enter（选词）：绝不能被我们 preventDefault 吃掉
+      var enterEv = new KeyboardEvent('keydown',
+        { key:'Enter', bubbles: true, cancelable: true, isComposing: true });
+      searchInput.dispatchEvent(enterEv);
+      log('ime_enter_not_prevented', !enterEv.defaultPrevented);
+
+      // ③ 提交：compositionend + 值变成中文
       searchInput.value = '首都机场';
-      searchInput.dispatchEvent(new Event('input', { bubbles: true }));
+      searchInput.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true }));
       await waitFor(function(){
         return document.querySelectorAll('#searchResults .sres').length > 0;
-      }, 6000);
-      log('bi_rows', document.querySelectorAll('#searchResults .sres').length);
-      log('bi_display', getComputedStyle(q('#searchResults')).display);
-      log('bi_kind', q('#searchResults .sres .sr-k') ? q('#searchResults .sres .sr-k').textContent : 'NONE');
-      log('bi_name', q('#searchResults .sres .sr-n') ? q('#searchResults .sres .sr-n').textContent : 'NONE');
-      // 点它，必须能定位并查询
-      var row = q('#searchResults .sres');
-      if (row){
-        row.click();
-        await waitFor(function(){
-          var b = q('#resVerdict .big');
-          return b && b.textContent && b.textContent !== '查询中…';
-        }, 30000);
-        log('bi_pick_result', q('#resVerdict .big') ? q('#resVerdict .big').textContent : 'NONE');
-        log('bi_pick_coord', q('#resCoord') ? q('#resCoord').textContent : 'NONE');
-      }
+      }, 15000);
+      log('ime_rows_after_commit', document.querySelectorAll('#searchResults .sres').length);
+      log('ime_queries', queries.join(','));
+      log('ime_queried_chinese', queries.indexOf('首都机场') >= 0);
+      log('ime_name', q('#searchResults .sres .sr-n') ? q('#searchResults .sres .sr-n').textContent : 'NONE');
+      log('ime_display', getComputedStyle(q('#searchResults')).display);
+
+      // ④ 组字结束后 Enter 必须能选结果
+      var ev2 = new KeyboardEvent('keydown', { key:'Enter', bubbles: true, cancelable: true });
+      searchInput.dispatchEvent(ev2);
+      await sleep(600);
+      log('ime_enter_selects', q('#resCoord') ? q('#resCoord').textContent : 'NONE');
+
+      window.fetch = realFetch;
+      CONFIG.keys.tdt = '';
+      geoCache.clear();
       searchInput.value = '';
-      searchInput.dispatchEvent(new Event('input', { bubbles: true }));
+      closeSearch();
     });
 
     // ---- 12b2. 把真实响应喂进【runSearch 本身】----
@@ -503,7 +540,7 @@ BODY_INJECT = """<script>
       searchInput.dispatchEvent(new Event('input', { bubbles: true }));
       // 先确认防抖确实触发了
       await sleep(200);
-      log('debounce_pending', searchDebounce ? 'yes' : 'no');
+      log('debounce_pending', (typeof searchDebounce !== 'undefined' && searchDebounce) ? 'yes' : 'no');
       /* 不能一看到 .sempty 就断言"搜完了" —— 那是 loading 中间态。
          必须等到出现真正的 .sres 行，或者等到搜索真的结束
          （runSearch 结束后：有 sres，或有 sempty 但【没有 .on 之外的中间态】）。

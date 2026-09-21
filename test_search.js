@@ -13,18 +13,6 @@ const { loadScript, extractFn, makeAsserter } = require('./test_util');
 
 const script = loadScript(process.argv[2]);
 
-/* 内置地点表是顶层 const 数组字面量，extractFn 取不到，单独切出来 */
-let srcBuiltin = '';
-{
-  const i = script.indexOf('const BUILTIN_PLACES = [');
-  if (i >= 0){
-    const j = script.indexOf('].map(([name, lat, lon]) =>', i);
-    const k = j >= 0 ? script.indexOf(';', j) : -1;
-    if (k > 0) srcBuiltin = script.slice(i, k + 1);
-  }
-}
-if (!srcBuiltin){ console.error('✗ 找不到 BUILTIN_PLACES'); process.exit(1); }
-
 const fnPost = extractFn(script, 'tdtPostStr');
 const fnParse = extractFn(script, 'parseCoord');
 const fnLonLat = extractFn(script, 'pickLonLat');
@@ -63,11 +51,8 @@ const sandbox = {
 vm.createContext(sandbox);
 /* 两个函数都要真正求值进沙箱 —— extractFn 返回的是【源码字符串】，
    只取出不执行的话，下面拿到的就是字符串而不是函数。 */
-/* 注意：vm 里顶层 const 是词法绑定，不会成为沙箱对象的属性 ——
-   sandbox.BUILTIN_PLACES 会一直是 undefined。必须显式导出一句。
-   这和 typeof 对 TDZ 不生效是同一类问题，踩过就记住。 */
-vm.runInContext(srcBuiltin + '\n' +
-  'try { globalThis.__BP = BUILTIN_PLACES; } catch(e) {}' + '\n' + fnPost + '\n' + fnParse + '\n' + fnLonLat + '\n' + fnPickNum, sandbox, { filename: 'search.js' });
+vm.runInContext(fnPost + '\n' + fnParse + '\n' + fnLonLat + '\n' + fnPickNum,
+  sandbox, { filename: 'search.js' });
 
 const A = makeAsserter('地名搜索参数与坐标解析正确');
 const ok = A.ok;
@@ -251,23 +236,6 @@ console.log('\n— 8. level 必须与 mapBound 自洽 —');
   ok(levels[0] === Math.max.apply(null, levels),
      '最小视野拿到最大 level（城市级 ' + levels[0] + '）');
   fakeMap._b = makeBounds(115.9, 39.5, 116.9, 40.3);
-}
-
-console.log('\n— 9. 内置常用地点（离线兜底）—');
-{
-  /* 在线通道依赖 key + 服务开通 + 网络 + 对方限流，任何一环出问题搜索就整体不可用。
-     把常去的地点固化下来，至少这些离线一定能搜到。 */
-  const BP = sandbox.__BP || [];
-  ok(BP.length > 40, '内置地点数量 ' + BP.length + ' 个');
-  const names = BP.map(p => p.name);
-  for (const n of ['首都机场','大兴机场','浦东机场','白云机场','宝安机场','天安门']){
-    ok(names.indexOf(n) >= 0, '含 ' + n);
-  }
-  /* 坐标必须在中国境内且是 WGS84 量级 —— 写反或换了坐标系都会露馅 */
-  const bad = BP.filter(p =>
-    !(p.lon > 73 && p.lon < 136 && p.lat > 3 && p.lat < 54));
-  ok(bad.length === 0, '全部坐标在中国境内（越界 ' + bad.length + ' 个' +
-     (bad.length ? '：' + bad.map(b => b.name).join(',') : '') + '）');
 }
 
 process.exit(A.done());

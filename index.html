@@ -802,7 +802,7 @@
    alpha 严格为 0 或 255，无抗锯齿中间值，因此判定无歧义。
    瓦片缺失 ⇒ 该区域无适飞空域。 */
 /* 构建标识：用来确认浏览器实际加载的是哪一版，排查缓存问题 */
-const BUILD = 'v17.6';
+const BUILD = 'v17.7';
 
 /* 加载层兜底：放在脚本最前面注册。
    之前把它放在末尾，一旦中间某处抛错就永远不执行，页面会卡死在
@@ -3029,48 +3029,6 @@ function parseCoord(text){
   return { lat, lon };
 }
 
-/* 内置常用地点：机场与少量地标。
-   为什么要这个：在线通道依赖 key + 服务开通 + 网络 + 对方限流，任何一环出问题
-   搜索就整体不可用；而"首都机场在哪、能不能飞"恰恰是最常见的查询。所以把一批
-   常去的地点固化进来，离线就能搜到。
-   坐标是 WGS84（在线通道返回 GCJ-02 时会自动换算，这里必须是同系的原始值）。
-   数据量刻意保持很小：只覆盖"用得上的那几十个"，不做成地名库。 */
-const BUILTIN_PLACES = [
-  // —— 北京 ——
-  ['首都机场', 40.0725, 116.5975], ['大兴机场', 39.5098, 116.4105],
-  ['南苑机场', 39.7826, 116.3889], ['天安门', 39.9087, 116.3975],
-  ['故宫', 39.9163, 116.3972], ['鸟巢', 39.9928, 116.3964],
-  ['中关村', 39.9847, 116.3164], ['国贸', 39.9087, 116.4613],
-  // —— 上海 ——
-  ['浦东机场', 31.1443, 121.8083], ['虹桥机场', 31.1979, 121.3363],
-  ['外滩', 31.2397, 121.4900], ['陆家嘴', 31.2397, 121.5010],
-  ['迪士尼', 31.1434, 121.6570],
-  // —— 广州 / 深圳 ——
-  ['白云机场', 23.3924, 113.2988], ['广州塔', 23.1066, 113.3245],
-  ['宝安机场', 22.6393, 113.8107], ['深圳市民中心', 22.5455, 114.0545],
-  ['世界之窗', 22.5372, 113.9741],
-  // —— 其他直辖市 / 省会 ——
-  ['重庆江北机场', 29.7192, 106.6418], ['成都双流机场', 30.5785, 103.9471],
-  ['成都天府机场', 30.3125, 104.4418], ['杭州萧山机场', 30.2295, 120.4344],
-  ['南京禄口机场', 31.7420, 118.8621], ['武汉天河机场', 30.7838, 114.2081],
-  ['西安咸阳机场', 34.4471, 108.7516], ['郑州新郑机场', 34.5197, 113.8408],
-  ['长沙黄花机场', 28.1892, 113.2196], ['昆明长水机场', 25.1019, 102.9292],
-  ['乌鲁木齐地窝堡机场', 43.9071, 87.4745], ['哈尔滨太平机场', 45.6234, 126.2500],
-  ['沈阳桃仙机场', 41.6398, 123.4833], ['天津滨海机场', 39.1244, 117.3462],
-  ['青岛胶东机场', 36.3664, 120.0860], ['厦门高崎机场', 24.5440, 118.1277],
-  ['海口美兰机场', 19.9349, 110.4590], ['三亚凤凰机场', 18.3029, 109.4123],
-  ['拉萨贡嘎机场', 29.2978, 90.9119], ['兰州中川机场', 36.5152, 103.6205],
-  ['西宁曹家堡机场', 36.5276, 102.0430], ['银川河东机场', 38.3216, 106.3930],
-  ['呼和浩特白塔机场', 40.8515, 111.8246], ['太原武宿机场', 37.7469, 112.6283],
-  ['石家庄正定机场', 38.2807, 114.6964], ['济南遥墙机场', 36.8572, 117.2160],
-  ['合肥新桥机场', 31.7800, 116.9768], ['南昌昌北机场', 28.8650, 115.9000],
-  ['福州长乐机场', 25.9351, 119.6633], ['南宁吴圩机场', 22.6083, 108.1725],
-  ['贵阳龙洞堡机场', 26.5385, 106.8008], ['桂林两江机场', 25.2181, 110.0392],
-  ['温州龙湾机场', 27.9122, 120.8522], ['宁波栎社机场', 29.8267, 121.4619],
-  ['无锡硕放机场', 31.4944, 120.4293], ['珠海金湾机场', 22.0064, 113.3761],
-  ['香港国际机场', 22.3080, 113.9185], ['澳门国际机场', 22.1496, 113.5916],
-  ['台北桃园机场', 25.0777, 121.2328],
-].map(([name, lat, lon]) => ({ kind:'city', name: name, lat: lat, lon: lon }));
 
 /* 省市清单直接从隐藏的 native select 读，避免第二份数据 */
 function provinceEntries(){
@@ -3109,8 +3067,7 @@ function renderSearch(items, note){
   }
   const rows = items.map((it, i) => {
     const kindLabel = it.kind === 'coord' ? '坐标'
-      : it.kind === 'prov' ? '行政区'
-      : it.kind === 'city' ? '内置' : '地点';
+      : it.kind === 'prov' ? '行政区' : '地点';
     /* 在线结果带地址：同名 POI 很多（"首都机场"能搜出一堆），
        只有名字根本分不清该点哪个。 */
     const tail = it.addr ? it.addr : (it.dist ? (it.dist < 1000 ? Math.round(it.dist) + 'm'
@@ -3153,10 +3110,6 @@ function localSearch(kw){
   const k = kw.toLowerCase();
   for (const p of provinceEntries()){
     if (p.name.indexOf(kw) >= 0 || p.group.indexOf(kw) >= 0) out.push(p);
-  }
-  /* 内置常用地点：离线可搜，不受 key / 网络 / 限流影响 */
-  for (const b of BUILTIN_PLACES){
-    if (b.name.indexOf(kw) >= 0) out.push(b);
   }
   return out;
 }
@@ -3484,27 +3437,68 @@ async function runSearch(kw){
   }
 }
 
+/* ---------------- 中文输入法（IME）处理 ----------------
+   这是本项目最容易被忽略的一类 bug，而它恰好解释了
+   "诊断按钮能搜到、搜索框搜不到"：
+
+   用拼音打「首都机场」时，输入框的值会先变成拼音 "shoudujichang"，
+   组字期间连续触发 input 事件（isComposing = true）。不做区分就会：
+     ① 拿拼音去搜在线地名 → 必然 0 条 → 下拉框弹出但是空的
+        （看起来就是"搜索坏了"，其实是拿半成品去搜了）
+     ② keydown 里对 Enter 无条件 preventDefault —— 而 Enter 正是
+        输入法用来选词的键，于是被我们的处理抢走，拼音可能留在框里
+     ③ 上下键也被当成"移动结果列表"，同样抢掉输入法的候选选择
+
+   诊断按钮之所以正常：它传的是硬编码字符串，完全绕过了输入法。
+
+   所以：组字期间一律不搜、不拦截按键；组字结束（compositionend）
+   再拿最终提交的中文去搜一次。 */
+let composing = false;
 let searchDebounce = null;
-searchInput.addEventListener('input', () => {
+
+function scheduleSearch(kw){
+  if (searchDebounce) clearTimeout(searchDebounce);
+  searchDebounce = setTimeout(() => { searchDebounce = null; runSearch(kw); }, 350);
+}
+function searchNow(kw){
+  if (searchDebounce){ clearTimeout(searchDebounce); searchDebounce = null; }
+  runSearch(kw);
+}
+function onSearchTextChanged(){
   const kw = searchInput.value.trim();
   searchClearBtn.hidden = !kw;
   if (!kw){
     closeSearch();
-    if (searchDebounce) clearTimeout(searchDebounce);
+    if (searchDebounce){ clearTimeout(searchDebounce); searchDebounce = null; }
     return;
   }
-  /* 防抖 350ms：原来每敲一个字符就发一次在线请求，
-     既浪费 QPS（两个服务都有限流），又容易把最后一次请求撞在限流上。 */
-  if (searchDebounce) clearTimeout(searchDebounce);
-  searchDebounce = setTimeout(() => { searchDebounce = null; runSearch(kw); }, 350);
+  scheduleSearch(kw);
+}
+
+searchInput.addEventListener('compositionstart', () => { composing = true; });
+searchInput.addEventListener('compositionend', () => {
+  composing = false;
+  onSearchTextChanged();          // 用最终提交的中文再搜一次
+});
+searchInput.addEventListener('input', (e) => {
+  /* 组字期间不搜：此时框里是拼音，搜了只会得到"没有结果"，
+     还会把最终的正确结果挤掉（用户看到的就是空下拉框）。 */
+  if (composing || (e && e.isComposing)) return;
+  onSearchTextChanged();
 });
 searchInput.addEventListener('keydown', e => {
+  /* 组字期间把按键完全交给输入法：Enter 是选词、上下是选候选。
+     这里绝不能 preventDefault，否则输入法被打断。keyCode 229 是
+     旧接口里"正在组字"的标记，一并放行。 */
+  if (e.isComposing || composing || e.keyCode === 229) return;
+
   if (e.key === 'Escape'){ closeSearch(); searchInput.blur(); return; }
-  if (!searchResults.classList.contains('on') || !searchItems.length) {
+
+  const opened = searchResults.classList.contains('on') && searchItems.length > 0;
+  if (!opened){
     if (e.key === 'Enter'){
       e.preventDefault();
-      if (searchDebounce){ clearTimeout(searchDebounce); searchDebounce = null; }
-      runSearch(searchInput.value.trim());
+      searchNow(searchInput.value.trim());
     }
     return;
   }
