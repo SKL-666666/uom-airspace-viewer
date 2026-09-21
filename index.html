@@ -795,7 +795,7 @@
    alpha 严格为 0 或 255，无抗锯齿中间值，因此判定无歧义。
    瓦片缺失 ⇒ 该区域无适飞空域。 */
 /* 构建标识：用来确认浏览器实际加载的是哪一版，排查缓存问题 */
-const BUILD = 'v17.0';
+const BUILD = 'v17.1';
 
 /* 加载层兜底：放在脚本最前面注册。
    之前把它放在末尾，一旦中间某处抛错就永远不执行，页面会卡死在
@@ -3215,7 +3215,13 @@ async function geoTianditu(kw, extra, retried){
       return geoTianditu(kw, { [miss]: TDT_PARAM_FALLBACK[miss] }, true);
     }
   }
-  if (cndesc) throw new Error('天地图：' + cndesc + '（' + (st.infocode || '') + '）');
+  /* 判成功不能只看 cndesc 非空！成功时代码是 1000，cndesc 恰好写着"服务正常"；
+     我之前写 if (cndesc) throw，于是【任何一次成功返回都会被抛掉】——
+     8 条 POI 明明就在响应里，却在读取之前就抛错，症状就是"服务正常却搜不出来"。
+     正确判法：看 infocode 是不是 1000（成功码）。 */
+  if (st.infocode && Number(st.infocode) !== 1000){
+    throw new Error('天地图：' + (cndesc || '未知错误') + '（' + st.infocode + '）');
+  }
   /* 响应结构按“到处找”来做，不写死一个字段名。
      教训：这个接口不同版本的返回字段并不一致（pois / poiList / result /
      data.pois 都出现过）。只认 pois 一个名字时，接口明明返回 1000（服务正常），
@@ -4378,6 +4384,8 @@ async function diagGeoTest(){
     lines.push('两个通道都没配 key，在线搜索无法工作。');
     lines.push('只有「坐标」和「行政区名」能在离线状态下检索。');
   }
+  lines.push('');
+  lines.push('—— 若下面这条报"成功"，说明解析已修好 ——');
   lines.push('');
   lines.push('—— 天地图原始返回结构（key 已脱敏）——');
   try { lines.push(await tdtRawDump(kw)); }
