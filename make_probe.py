@@ -310,6 +310,168 @@ BODY_INJECT = """<script>
     });
 
     // ---- 12. 搜索（1.1 / 2.3 / 2.9）----
+    // 用户环境里配了天地图 tk，所以在线通道是活的；无头环境默认没有 tk。
+    // 这里装一个假 tk + 拦掉 fetch 返回真实形状的响应，把【用户那条路径】跑起来。
+    await step('search_online', async function(){
+      var REAL = {
+        count: 958, prompt: [{type:0,admins:'北京市'}], resultType: 1, lineData: [],
+        keyWord: '首都机场', status: { cndesc:'服务正常', infocode: 1000 },
+        pois: [
+          { address:'北京市顺义区', phone:'', poiType:0, name:'首都机场',
+            source:'0', hotPointID:'', lonlat:'116.406621,40.072647' },
+          { address:'北京市朝阳区', phone:'', poiType:0, name:'首都机场T3',
+            source:'0', hotPointID:'', lonlat:'116.585,40.053' }
+        ]
+      };
+      CONFIG.keys.tdt = 'FAKE_TK_FOR_PROBE______________';
+      var realFetch = window.fetch;
+      window.fetch = function(u, o){
+        if (String(u).indexOf('api.tianditu.gov.cn') >= 0){
+          return Promise.resolve({ ok:true, status:200,
+            text: function(){ return Promise.resolve(JSON.stringify(REAL)); } });
+        }
+        return realFetch.apply(this, arguments);
+      };
+
+      // 用【真实输入事件】驱动，不直接调用函数 —— 要测的就是这条接线
+      searchInput.value = '';
+      searchInput.dispatchEvent(new Event('input', { bubbles: true }));
+      searchInput.value = '首都机场';
+      searchInput.dispatchEvent(new Event('input', { bubbles: true }));
+      await waitFor(function(){
+        return document.querySelectorAll('#searchResults .sres').length > 0;
+      }, 15000);
+
+      log('so_input_val', searchInput.value);
+      log('so_rows', document.querySelectorAll('#searchResults .sres').length);
+      log('so_display', getComputedStyle(q('#searchResults')).display);
+      log('so_first_name', q('#searchResults .sres .sr-n') ? q('#searchResults .sres .sr-n').textContent : 'NONE');
+      log('so_first_addr', q('#searchResults .sres .sr-d') ? q('#searchResults .sres .sr-d').textContent : 'NONE');
+      log('so_box_class', q('#searchResults').className);
+      log('so_cache', geoCache.size);
+      // 点一条，看是否定位并查询
+      var row = q('#searchResults .sres');
+      if (row){
+        row.click();
+        await waitFor(function(){
+          var b = q('#resVerdict .big');
+          return b && b.textContent && b.textContent !== '查询中…';
+        }, 30000);
+        log('so_after_pick_closed', getComputedStyle(q('#searchResults')).display === 'none');
+        log('so_after_pick_result', q('#resVerdict .big') ? q('#resVerdict .big').textContent : 'NONE');
+        log('so_after_pick_coord', q('#resCoord') ? q('#resCoord').textContent : 'NONE');
+      }
+      window.fetch = realFetch;
+      CONFIG.keys.tdt = '';
+    });
+
+    // ---- 12b1. 内置地点：离线也必须能搜到 ----
+    await step('search_builtin', async function(){
+      CONFIG.keys.tdt = '';           // 刻意清掉 key，模拟在线通道不可用
+      geoCache.clear();
+      searchInput.value = '';
+      searchInput.dispatchEvent(new Event('input', { bubbles: true }));
+      searchInput.value = '首都机场';
+      searchInput.dispatchEvent(new Event('input', { bubbles: true }));
+      await waitFor(function(){
+        return document.querySelectorAll('#searchResults .sres').length > 0;
+      }, 6000);
+      log('bi_rows', document.querySelectorAll('#searchResults .sres').length);
+      log('bi_display', getComputedStyle(q('#searchResults')).display);
+      log('bi_kind', q('#searchResults .sres .sr-k') ? q('#searchResults .sres .sr-k').textContent : 'NONE');
+      log('bi_name', q('#searchResults .sres .sr-n') ? q('#searchResults .sres .sr-n').textContent : 'NONE');
+      // 点它，必须能定位并查询
+      var row = q('#searchResults .sres');
+      if (row){
+        row.click();
+        await waitFor(function(){
+          var b = q('#resVerdict .big');
+          return b && b.textContent && b.textContent !== '查询中…';
+        }, 30000);
+        log('bi_pick_result', q('#resVerdict .big') ? q('#resVerdict .big').textContent : 'NONE');
+        log('bi_pick_coord', q('#resCoord') ? q('#resCoord').textContent : 'NONE');
+      }
+      searchInput.value = '';
+      searchInput.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+
+    // ---- 12b2. 把真实响应喂进【runSearch 本身】----
+    // 之前只测到 geoTianditu 这一层（诊断按钮就是直接调它）。
+    // 用户看到的是 runSearch 的结果，所以必须让真实响应走完整条链路。
+    // 如果他一路正常而这一路不行，差异就一定在 runSearch 里。
+    await step('search_runsearch_real', async function(){
+      var REAL = {
+        count: 958, prompt: [{type:0, admins:'北京市'}], resultType: 1, lineData: [],
+        keyWord: '首都机场', status: { cndesc:'服务正常', infocode: 1000 },
+        pois: [
+          { address:'北京市顺义区', phone:'', poiType:0, name:'首都机场',
+            source:'0', hotPointID:'', lonlat:'116.406621,40.072647' },
+          { address:'北京市朝阳区', phone:'', poiType:0, name:'首都机场T3',
+            source:'0', hotPointID:'', lonlat:'116.585,40.053' }
+        ]
+      };
+      CONFIG.keys.tdt = 'FAKE_TK_FOR_PROBE______________';
+      var realFetch = window.fetch;
+      window.fetch = function(u){
+        if (String(u).indexOf('tianditu') >= 0){
+          return Promise.resolve({ ok:true, status:200,
+            text: function(){ return Promise.resolve(JSON.stringify(REAL)); } });
+        }
+        return realFetch.apply(this, arguments);
+      };
+      geoCache.clear();
+      try { await runSearch('首都机场'); } catch(e){ log('rs_THROW', (e&&e.message)||e); }
+      await sleep(400);
+      log('rs_rows', document.querySelectorAll('#searchResults .sres').length);
+      log('rs_display', getComputedStyle(q('#searchResults')).display);
+      log('rs_html', q('#searchResults').innerHTML.slice(0, 200));
+      log('rs_searchItems', searchItems.length);
+      log('rs_cache', geoCache.size);
+      log('rs_seq', searchSeq);
+      window.fetch = realFetch;
+      CONFIG.keys.tdt = '';
+      geoCache.clear();
+    });
+
+    // ---- 12c. 并发/重复输入的竞态：打字稍慢时会不会把结果丢掉 ----
+    await step('search_race', async function(){
+      var REAL = {
+        count: 958, resultType: 1, lineData: [], keyWord: '首都机场',
+        status: { cndesc:'服务正常', infocode: 1000 },
+        pois: [{ address:'北京市顺义区', name:'首都机场', lonlat:'116.406621,40.072647' }]
+      };
+      CONFIG.keys.tdt = 'FAKE_TK_FOR_PROBE______________';
+      var realFetch = window.fetch;
+      var calls = 0;
+      window.fetch = function(u){
+        if (String(u).indexOf('api.tianditu.com') >= 0 || String(u).indexOf('api.tianditu.gov.cn') >= 0){
+          calls++;
+          // 故意慢一点，制造"第一次请求还没回来，第二次已经发起"的窗口
+          return new Promise(function(res){
+            setTimeout(function(){
+              res({ ok:true, status:200,
+                    text: function(){ return Promise.resolve(JSON.stringify(REAL)); } });
+            }, 300);
+          });
+        }
+        return realFetch.apply(this, arguments);
+      };
+      geoCache.clear();
+      // 模拟用户"打字稍慢但有重复输入"：连续两次触发同一个词
+      runSearch('首都机场');
+      await sleep(80);
+      runSearch('首都机场');
+      await waitFor(function(){
+        return document.querySelectorAll('#searchResults .sres').length > 0;
+      }, 8000).then(function(got){ log('race_got_rows', got); });
+      log('race_rows', document.querySelectorAll('#searchResults .sres').length);
+      log('race_display', getComputedStyle(q('#searchResults')).display);
+      log('race_note', q('#searchResults .sempty') ? q('#searchResults .sempty').textContent.slice(0,80) : 'NONE');
+      window.fetch = realFetch;
+      CONFIG.keys.tdt = '';
+      geoCache.clear();
+    });
+
     await step('search', async function(){
       // 坐标解析（离线，必须可用）
       searchInput.value = '39.9087,116.3975';
