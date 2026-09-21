@@ -365,6 +365,35 @@ BODY_INJECT = """<script>
       CONFIG.keys.tdt = '';
     });
 
+    // ---- 12a1. 网络层失败（Failed to fetch）要给出可操作提示 ----
+    await step('search_netfail', async function(){
+      CONFIG.keys.tdt = 'FAKE_TK_FOR_PROBE______________';
+      var realFetch = window.fetch;
+      window.fetch = function(u){
+        if (String(u).indexOf('tianditu') >= 0){
+          return Promise.reject(new TypeError('Failed to fetch'));
+        }
+        return realFetch.apply(this, arguments);
+      };
+      geoCache.clear();
+      searchInput.value = '';
+      searchInput.dispatchEvent(new Event('input', { bubbles: true }));
+      searchInput.value = '首都机场';
+      searchInput.dispatchEvent(new Event('input', { bubbles: true }));
+      await waitFor(function(){ return !!q('#searchResults .sempty'); }, 20000);
+      var note = q('#searchResults .sempty') ? q('#searchResults .sempty').textContent : '';
+      log('nf_note', note.slice(0, 160).split(String.fromCharCode(10)).join(' / '));
+      log('nf_says_network', /网络/.test(note));
+      log('nf_mentions_tile_probe', /瓦片域名/.test(note));
+      log('nf_gives_actions', /代理|扩展|防火墙|高德/.test(note));
+      log('nf_not_blaming_key', !/key 无效|非法key/.test(note));
+      window.fetch = realFetch;
+      CONFIG.keys.tdt = '';
+      geoCache.clear();
+      searchInput.value = '';
+      closeSearch();
+    });
+
     // ---- 12a2. 宽泛关键词（顶层无 pois 的聚合响应）不能报成故障 ----
     await step('search_toobroad', async function(){
       var AGG = { count: 2196, prompt: [{type:0,admins:''}], resultType: 1,

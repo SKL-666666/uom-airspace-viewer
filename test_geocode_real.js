@@ -54,8 +54,15 @@ const REAL = {
 };
 
 const calls = [];
+/* 注意：geoTianditu 现在依赖这些宿主能力，替身少一个它就会抛错。
+   之前就因为替身不全（缺 performance）让用例失败 —— 那不是我代码的错，
+   而是测试环境没铺全。所以这里一次列齐。 */
 const sandbox = {
   console: console, Math: Math, isFinite: isFinite, parseFloat: parseFloat,
+  performance: { now: () => Date.now() },
+  AbortController: (typeof AbortController !== 'undefined') ? AbortController : undefined,
+  setTimeout: setTimeout, clearTimeout: clearTimeout,
+  navigator: { onLine: true },
   encodeURIComponent: encodeURIComponent,
   report: () => {},
   tdtLastCount: 0,

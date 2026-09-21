@@ -802,7 +802,7 @@
    alpha 严格为 0 或 255，无抗锯齿中间值，因此判定无歧义。
    瓦片缺失 ⇒ 该区域无适飞空域。 */
 /* 构建标识：用来确认浏览器实际加载的是哪一版，排查缓存问题 */
-const BUILD = 'v18.1';
+const BUILD = 'v18.2';
 
 /* 加载层兜底：放在脚本最前面注册。
    之前把它放在末尾，一旦中间某处抛错就永远不执行，页面会卡死在
@@ -3250,7 +3250,35 @@ async function geoTianditu(kw, extra, retried){
   const url = 'https://api.tianditu.gov.cn/v2/search?postStr=' +
     encodeURIComponent(JSON.stringify(tdtPostStr(kw, extra))) +
     '&type=query&tk=' + encodeURIComponent(tk);
-  const r = await fetch(url, { cache: 'no-store' });
+  /* fetch 抛错要分清是哪一类 —— "Failed to fetch" 是个笼统说法，
+     至少对应三种不同原因：跨域被拒、真实网络层失败、请求超时。
+     这里加显式超时（否则请求可能长时间悬挂，用户只看到"一直转圈"），
+     并把原因分类带出去。 */
+  let r;
+  const ac = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+  const to = ac ? setTimeout(() => ac.abort(), 12000) : null;
+  const t0 = performance.now();
+  try {
+    r = await fetch(url, ac ? { cache: 'no-store', signal: ac.signal }
+                            : { cache: 'no-store' });
+  } catch(e){
+    const ms = Math.round(performance.now() - t0);
+    const kind = (e && e.name === 'AbortError') ? '超时（12 秒）' : '网络层失败';
+    let extra = '';
+    try {
+      if (navigator.onLine === false) extra = '；浏览器报告当前离线';
+      else if (navigator.connection && navigator.connection.effectiveType)
+        extra = '；连接类型 ' + navigator.connection.effectiveType;
+    } catch(e2){}
+    report('GEO_TDT_NETFAIL', { kind: kind, ms: ms, msg: (e && e.message) || '',
+                                online: navigator.onLine });
+    const err = new Error('天地图：' + kind + '（' + ms + ' ms' + extra + '）。'
+      + '通常是网络/DNS/代理问题，或浏览器扩展拦了 api.tianditu.gov.cn，与 key 无关。');
+    err.netFail = true;
+    throw err;
+  } finally {
+    if (to) clearTimeout(to);
+  }
   const text = await r.text();
   let j = null;
   try { j = JSON.parse(text); } catch(e){}
@@ -3461,6 +3489,30 @@ async function geoAmap(kw){
   return out;
 }
 
+/* 轻量连通性探测：用 Image 试加载一张天地图瓦片。
+   为什么用它：能绕开 CORS 判断「拿到没拿到」，而且瓦片与 api 是两个域名 ——
+   若瓦片能通而 api 不通，说明问题只出在 api 这条线上（例如被单独拦截）。
+   拿不到 HTTP 状态码，但足以回答「网络到底通不通」这个二选一的问题。 */
+function probeTdtReachable(timeoutMs = 8000){
+  return new Promise(resolve => {
+    const t0 = performance.now();
+    const img = new Image();
+    let done = false;
+    const fin = (ok) => {
+      if (done) return;
+      done = true;
+      resolve({ ok: ok, ms: Math.round(performance.now() - t0) });
+    };
+    const t = setTimeout(() => fin(false), timeoutMs || 8000);
+    img.onload = () => { clearTimeout(t); fin(true); };
+    img.onerror = () => { clearTimeout(t); fin(false); };
+    const tk = CONFIG.keys.tdt || '';
+    img.src = 'https://t0.tianditu.gov.cn/vec_w/wmts?SERVICE=WMTS&REQUEST=GetTile'
+      + '&VERSION=1.0.0&LAYER=vec&STYLE=default&TILEMATRIXSET=w&FORMAT=tiles'
+      + '&TILEMATRIX=3&TILEROW=3&TILECOL=6&tk=' + encodeURIComponent(tk)
+      + '&_probe=' + Date.now();
+  });
+}
 /* 在线通道列表。按顺序尝试，第一个成功即用 —— 天地图要 tk 且要开通「地名搜索」
    服务，高德要另一个 key；两条路都留着，坏一条不至于整个搜索不能用。 */
 const GEO_PROVIDERS = [
@@ -3485,6 +3537,13 @@ async function geoSearch(kw){
           : '没有匹配结果'));
     } catch(e){
       errors.push((e && e.message) || String(e));
+      if (e && e.netFail){
+        /* 网络层失败：顺手做一次最轻的连通性判断，
+           再给出可操作的建议，而不是只丢一句 Failed to fetch。 */
+        const probe = await probeTdtReachable();
+        return { items: [], used: '', errors: [e.message], netFail: true,
+                 reachable: probe.ok, probeMs: probe.ms, noneConfigured: false };
+      }
       if (e && e.tooBroad){
         /* 关键词太宽泛：不是故障，是关键词选得不够具体。
            这跟"key 不对/网络不通"是两回事，得分开展示。 */
@@ -3522,6 +3581,7 @@ async function runSearch(kw){
 
   let remote = [], used = '', errors = [], noneConfigured = false;
   let tooBroad = false, broadCount = 0;
+  let netFail = false, reachable = null, probeMs = 0;
   if (geoCache.has(kw)){
     const hit = geoCache.get(kw);
     remote = hit.items; used = hit.used; errors = hit.errors;
@@ -3532,6 +3592,8 @@ async function runSearch(kw){
     remote = r.items; used = r.used; errors = r.errors;
     noneConfigured = !!r.noneConfigured;
     tooBroad = !!r.tooBroad; broadCount = r.broadCount || 0;
+    netFail = !!r.netFail;
+    if (netFail){ reachable = r.reachable; probeMs = r.probeMs || 0; }
     /* 只缓存成功的结果。失败可能是限流或临时网络问题，缓存住会让用户
        一直搜不出来 —— 这种"越试越坏"的行为最难查。 */
     if (remote.length) geoCache.set(kw, { items: remote, used: used, errors: errors });
@@ -3541,6 +3603,13 @@ async function runSearch(kw){
   const merged = local.concat(remote);
   if (merged.length){
     renderSearch(merged, used ? '在线结果来自' + used : null);
+  } else if (netFail){
+    const reach = reachable === true ? '能连通'
+                : (reachable === false ? '也连不上' : '未能判定');
+    renderSearch([], '在线搜索网络失败：' + errors.join('；') +
+      '\n天地图瓦片域名' + reach + '（' + (probeMs || 0) + ' ms）。' +
+      '\n可检查：代理/VPN 是否拦了这个域名、浏览器扩展（广告拦截/隐私保护）、' +
+      'Windows 防火墙；或改用高德 key（设置 → 图源与 Key）。');
   } else if (tooBroad){
     renderSearch([], '「' + kw + '」命中的地点太多，接口只回了统计汇总（' +
       broadCount + ' 条），没有给地点列表。\n请把关键词写得更具体，'
