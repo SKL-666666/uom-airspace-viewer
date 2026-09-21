@@ -802,7 +802,7 @@
    alpha 严格为 0 或 255，无抗锯齿中间值，因此判定无歧义。
    瓦片缺失 ⇒ 该区域无适飞空域。 */
 /* 构建标识：用来确认浏览器实际加载的是哪一版，排查缓存问题 */
-const BUILD = 'v17.8';
+const BUILD = 'v18.0';
 
 /* 加载层兜底：放在脚本最前面注册。
    之前把它放在末尾，一旦中间某处抛错就永远不执行，页面会卡死在
@@ -3289,7 +3289,8 @@ async function geoTianditu(kw, extra, retried){
   let cand = [], out = [], chosen = null, firstItemKeys = '';
   const arrSizes = [];
   try {
-    ({ cand, out, chosen, firstItemKeys } = parseTdtPayload(j, kw, arrSizes));
+    ({ cand, out, chosen, firstItemKeys } =
+       parseTdtPayload(j, kw, arrSizes, text));
   } catch(e){
     report('GEO_TDT_PARSE_THROW', (e && e.stack ? e.stack.slice(0, 400)
                                                    : String(e)));
@@ -3313,12 +3314,17 @@ async function geoTianditu(kw, extra, retried){
       topKeys: j ? Object.keys(j).join(',') : '',
       arrSizes: arrSizes.join(','),
       firstKeys: first ? Object.keys(first).join(',') : '(没有对象元素)',
-      /* 只留前 400 字符：够看出字段名和值的形状，又不会把日志撑爆 */
-      firstSample: first ? JSON.stringify(first).slice(0, 400) : ''
+      /* 原始返回原文。脱敏后截断 —— 这是唯一不需要再猜的东西：
+         "没有对象元素"说明结构和我预想的根本不同，只有看到原文才能改对。 */
+      raw: typeof rawText === 'string' ? rawText.slice(0, 1200) : '',
+      valueTypes: j ? Object.keys(j).map(k =>
+        k + ':' + (Array.isArray(j[k]) ? 'array[' + j[k].length + ']'
+                 : typeof j[k])).join(' ') : ''
     };
     report('GEO_TDT_UNPARSED', info);
-    const err = new Error('天地图：命中 ' + tdtLastCount + ' 条但认不出结构。'
-      + '首条字段：' + info.firstKeys + '　样本：' + info.firstSample.slice(0, 160));
+    const err = new Error('天地图：命中 ' + tdtLastCount + ' 条但认不出结构。' +
+      '\n顶层：' + info.valueTypes +
+      '\n原文：' + info.raw.slice(0, 700));
     err.detail = info;
     throw err;
   }
@@ -3346,7 +3352,7 @@ function firstObjectIn(j){
 
 /* 从天地图响应里取出 POI 列表。抽成独立函数是为了能单独测、也为了把
    "解析"这一步与"发请求/判成功"分开，出错时能定位到具体是哪一步。 */
-function parseTdtPayload(j, kw, arrSizes){
+function parseTdtPayload(j, kw, arrSizes, rawText){
   const cand = [];
   const pushArr = (v, from) => {
     if (Array.isArray(v) && v.length && v.some(x => x && typeof x === 'object')){
@@ -4538,6 +4544,20 @@ async function diagGeoTest(){
       const ms = Math.round(performance.now() - t0);
       if (items.length) okCount++;
       lines.push('· ' + p.label + '：成功，' + items.length + ' 条，' + ms + ' ms');
+      /* 成功但 0 条时，把"为什么 0 条"直接写出来 ——
+         这正是踩了多次的地方：接口说命中几千条，却一条都拿不到。 */
+      if (!items.length){
+        lines.push('    ⚠ 接口通了但没拿到条目。下面是原始返回原文（脱敏后截断）：');
+        try {
+          const tk2 = CONFIG.keys.tdt;
+          const u2 = 'https://api.tianditu.gov.cn/v2/search?postStr=' +
+            encodeURIComponent(JSON.stringify(tdtPostStr(kw))) + '&type=query&tk=' +
+            encodeURIComponent(tk2);
+          const r2 = await fetch(u2, { cache:'no-store' });
+          const t2 = (await r2.text()).split(tk2).join('***');
+          lines.push('    ' + t2.slice(0, 900));
+        } catch(e2){ lines.push('    取原文失败：' + ((e2 && e2.message) || e2)); }
+      }
       if (items.length){
         const it = items[0];
         lines.push('    首条 ' + it.name + '　' + it.lat.toFixed(5) + ', ' +
