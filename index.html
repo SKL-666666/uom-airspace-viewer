@@ -3060,12 +3060,15 @@ function renderSearch(items, note){
   const rows = items.map((it, i) => {
     const kindLabel = it.kind === 'coord' ? '坐标'
       : it.kind === 'prov' ? '行政区' : '地点';
-    const dist = it.dist ? (it.dist < 1000 ? Math.round(it.dist) + 'm'
-                                            : (it.dist / 1000).toFixed(1) + 'km') : '';
+    /* 在线结果带地址：同名 POI 很多（"首都机场"能搜出一堆），
+       只有名字根本分不清该点哪个。 */
+    const tail = it.addr ? it.addr : (it.dist ? (it.dist < 1000 ? Math.round(it.dist) + 'm'
+                                            : (it.dist / 1000).toFixed(1) + 'km') : '');
     return '<div class="sres" data-i="' + i + '">' +
       '<span class="sr-k">' + escapeHtml(kindLabel) + '</span>' +
       '<span class="sr-n">' + escapeHtml(it.name) + '</span>' +
-      (dist ? '<span class="sr-d">' + escapeHtml(dist) + '</span>' : '') +
+      (tail ? '<span class="sr-d" title="' + escapeHtml(tail) + '">'
+              + escapeHtml(tail) + '</span>' : '') +
       '</div>';
   }).join('');
   box.innerHTML = rows + (note ? '<div class="sempty">' + escapeHtml(note) + '</div>' : '');
@@ -3106,6 +3109,38 @@ function pickNum(o, keys){
     if (o && o[k] != null && isFinite(parseFloat(o[k]))) return parseFloat(o[k]);
   }
   return NaN;
+}
+
+/* 从一条记录里挖出经纬度。
+   天地图返回的是【合并字段】 lonlat: "116.4,39.9"（经度在前），而不是分开的
+   lon / lat —— 我原来只认后者，于是接口明明返回 8 条 POI 也被整批丢掉，
+   症状和"搜不到"完全一样。所以这里两种形态都要支持。 */
+function pickLonLat(o){
+  const asNum = (v) => {
+    const n = parseFloat(v);
+    return isFinite(n) ? n : NaN;
+  };
+  /* 合并字段：lonlat / location / lnglat / center / point，内容形如 "a,b" 或 [a,b] */
+  for (const k of ['lonlat', 'lnglat', 'location', 'center', 'point', 'lonLat']){
+    const v = o && o[k];
+    if (v == null) continue;
+    let a = NaN, b = NaN;
+    if (Array.isArray(v)) { a = asNum(v[0]); b = asNum(v[1]); }
+    else if (typeof v === 'string' && v.indexOf(',') > 0){
+      const parts = v.split(',');
+      a = asNum(parts[0]); b = asNum(parts[1]);
+    } else if (v && typeof v === 'object'){ a = asNum(v.lon != null ? v.lon : v.lng); b = asNum(v.lat); }
+    if (isFinite(a) && isFinite(b)){
+      /* 判别哪个是经度：|值|>90 的必定是经度；否则中文语境下按"经度在前"处理
+         （天地图的 lonlat 就是经度在前）。用当前视野做交叉校验，避免把
+         纬度 39、经度 116 这种组合判反。 */
+      if (Math.abs(a) <= 90 && Math.abs(b) > 90) return { lon: b, lat: a };
+      return { lon: a, lat: b };
+    }
+  }
+  const lon = pickNum(o, ['lon', 'lng', 'longitude', 'LON']);
+  const lat = pickNum(o, ['lat', 'latitude', 'LAT']);
+  return (isFinite(lon) && isFinite(lat)) ? { lon: lon, lat: lat } : null;
 }
 /* 每个地理编码通道返回 [{lat, lon, name}]，坐标一律先换算成 WGS84 再交出去 ——
    下游（判定、标记、收藏、导出）只认 WGS84，换算必须在边界处一次做完。
@@ -3210,11 +3245,12 @@ async function geoTianditu(kw, extra, retried){
   for (const c of cand){
     arrSizes.push(c.from + '=' + c.arr.length);
     const rows = c.arr.map(x => {
-      const lon = pickNum(x, LON_KEYS), lat = pickNum(x, LAT_KEYS);
-      if (!isFinite(lon) || !isFinite(lat)) return null;
+      const ll = pickLonLat(x);
+      if (!ll) return null;
       let name = '';
       for (const k of NAME_KEYS){ if (x[k]) { name = String(x[k]); break; } }
-      return { kind:'geo', src:'天地图', lat: lat, lon: lon, name: name || kw };
+      return { kind:'geo', src:'天地图', lat: ll.lat, lon: ll.lon,
+               addr: x.address ? String(x.address) : '', name: name || kw };
     }).filter(Boolean);
     if (rows.length){
       chosen = c.from; out = rows;
@@ -3258,12 +3294,11 @@ async function geoAmap(kw){
   report('GEO_AMAP', { n: pois.length });
   const out = [];
   for (const p of pois){
-    const loc = String(p.location || '').split(',');
-    const glon = parseFloat(loc[0]), glat = parseFloat(loc[1]);
-    if (!isFinite(glon) || !isFinite(glat)) continue;
-    const w = gcj02ToWgs84(glat, glon);          // GCJ-02 -> WGS84
+    const ll = pickLonLat(p);                    // location: "116.4,39.9"
+    if (!ll) continue;
+    const w = gcj02ToWgs84(ll.lat, ll.lon);      // 高德是 GCJ-02 -> WGS84
     out.push({ kind:'geo', src:'高德', lat: w[0], lon: w[1],
-               name: p.name || kw });
+               addr: p.address ? String(p.address) : '', name: p.name || kw });
   }
   return out;
 }

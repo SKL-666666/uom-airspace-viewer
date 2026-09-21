@@ -15,8 +15,10 @@ const script = loadScript(process.argv[2]);
 
 const fnPost = extractFn(script, 'tdtPostStr');
 const fnParse = extractFn(script, 'parseCoord');
-if (!fnPost || !fnParse) {
-  console.error('✗ 找不到 tdtPostStr / parseCoord');
+const fnLonLat = extractFn(script, 'pickLonLat');
+const fnPickNum = extractFn(script, 'pickNum');
+if (!fnPost || !fnParse || !fnLonLat || !fnPickNum) {
+  console.error('✗ 找不到 tdtPostStr / parseCoord / pickLonLat / pickNum');
   process.exit(1);
 }
 
@@ -49,12 +51,13 @@ const sandbox = {
 vm.createContext(sandbox);
 /* 两个函数都要真正求值进沙箱 —— extractFn 返回的是【源码字符串】，
    只取出不执行的话，下面拿到的就是字符串而不是函数。 */
-vm.runInContext(fnPost + '\n' + fnParse, sandbox, { filename: 'search.js' });
+vm.runInContext(fnPost + '\n' + fnParse + '\n' + fnLonLat + '\n' + fnPickNum, sandbox, { filename: 'search.js' });
 
 const A = makeAsserter('地名搜索参数与坐标解析正确');
 const ok = A.ok;
 const post = sandbox.tdtPostStr;
 const parseCoord = sandbox.parseCoord;
+const pickLonLat = sandbox.pickLonLat;
 
 console.log('=== 地名搜索测试 ===\n');
 console.log('— 1. 天地图 postStr 必须限定搜索空间（这次线上就是缺这个）—');
@@ -148,6 +151,34 @@ console.log('\n— 6. 坐标解析（离线检索的第一路）—');
   /* 越界要挡住 */
   ok(parseCoord('91,116') === null, '纬度 91 超范围 -> null');
   ok(parseCoord('39.9,181') === null, '经度 181 超范围 -> null');
+}
+
+console.log('\n— 7. pickLonLat：吃下天地图真实返回的 lonlat 合并字段 —');
+{
+  /* 这段形状照抄用户线上真实返回：
+       {"count":958,"pois":[{"address":...,"name":...,"lonlat":"116.4,39.9"},...],
+        "resultType":1,"status":{"cndesc":"服务正常","infocode":1000}}
+     教训：我只认 lon/lat 分开的字段，导致接口给了 8 条 POI 却一条都解析不出来，
+     症状和“搜不到”完全一样。所以把真实形状钉成用例。
+   */
+  const realPoi = {
+    address: '北京市顺义区', phone: '', poiType: 0, name: '首都机场',
+    source: '0', hotPointID: '', lonlat: '116.406621,40.072647',
+  };
+  const ll = pickLonLat(realPoi);
+  ok(!!ll, 'lonlat 合并字段能被解析出来');
+  ok(ll && Math.abs(ll.lon - 116.406621) < 1e-6, '经度取对了：' + (ll && ll.lon));
+  ok(ll && Math.abs(ll.lat - 40.072647) < 1e-6, '纬度取对了：' + (ll && ll.lat));
+  ok(ll && Math.abs(ll.lon) > 90, '经度落在 |lon|>90 的合理区间（没被当成纬度）');
+  ok(pickLonLat({ location: '121.47,31.23' }).lon === 121.47, '高德 location 合并字段');
+  ok(pickLonLat({ lonlat: [116.4, 39.9] }).lat === 39.9, '数组形态 [lon,lat]');
+  ok(pickLonLat({ lnglat: '39.9,116.4' }).lon === 116.4, '内容明显是 纬度,经度 时能自动纠正');
+  ok(pickLonLat({ lon: 116.4, lat: 39.9 }).lon === 116.4, '分开的 lon/lat 仍然支持');
+  ok(pickLonLat({ center: { lon: 116.4, lat: 39.9 } }).lat === 39.9, '嵌套对象形态');
+  ok(pickLonLat({ name: '首都机场', address: '北京' }) === null, '没有坐标 -> null');
+  ok(pickLonLat({ lonlat: 'abc' }) === null, '畸形 lonlat -> null');
+  ok(pickLonLat({}) === null, '空对象 -> null');
+  ok(pickLonLat(null) === null, 'null -> null');
 }
 
 process.exit(A.done());
