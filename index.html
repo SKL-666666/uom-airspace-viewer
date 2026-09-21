@@ -797,7 +797,7 @@
    alpha 严格为 0 或 255，无抗锯齿中间值，因此判定无歧义。
    瓦片缺失 ⇒ 该区域无适飞空域。 */
 /* 构建标识：用来确认浏览器实际加载的是哪一版，排查缓存问题 */
-const BUILD = 'v17.2';
+const BUILD = 'v17.3';
 
 /* 加载层兜底：放在脚本最前面注册。
    之前把它放在末尾，一旦中间某处抛错就永远不执行，页面会卡死在
@@ -4368,7 +4368,7 @@ async function diagGeoTest(){
   lines.push('高德 key：' + (CONFIG.keys.amap
     ? '已配置（' + CONFIG.keys.amap.length + ' 字符）' : '未配置'));
   lines.push('');
-  let anyKey = false;
+  let anyKey = false, okCount = 0;
   for (const p of GEO_PROVIDERS){
     if (!CONFIG.keys[p.need]){
       lines.push('· ' + p.label + '：跳过（未配置 key）');
@@ -4384,6 +4384,7 @@ async function diagGeoTest(){
     try {
       const items = await p.run(kw);
       const ms = Math.round(performance.now() - t0);
+      if (items.length) okCount++;
       lines.push('· ' + p.label + '：成功，' + items.length + ' 条，' + ms + ' ms');
       if (items.length){
         const it = items[0];
@@ -4410,12 +4411,17 @@ async function diagGeoTest(){
   lines.push('—— 天地图原始返回结构（key 已脱敏）——');
   try { lines.push(await tdtRawDump(kw)); }
   catch(e){ lines.push('取原始返回失败：' + ((e && e.message) || e)); }
-  lines.push('');
-  lines.push('常见结论对照：');
-  lines.push('  非法key / 请重新申请Key  -> 去天地图控制台核对这个 tk');
-  lines.push('  未开通/无权限            -> 该 key 要单独开通「地名搜索」服务');
-  lines.push('  INVALID_USER_KEY         -> 高德 key 类型不对，要「Web服务」key');
-  lines.push('  Failed to fetch          -> 网络不通或被中间设备拦截（不是 key 问题）');
+  /* 排查对照只在【确实失败】时才给。之前无论成败都打印这一段，
+     结果成功的输出里也挂着"非法key / 未开通"这些失败排查项，
+     用户看到会以为哪里还有问题。 */
+  if (!okCount){
+    lines.push('');
+    lines.push('排查对照：');
+    lines.push('  非法key / 请重新申请Key  -> 去天地图控制台核对这个 tk');
+    lines.push('  未开通/无权限            -> 该 key 要单独开通「地名搜索」服务');
+    lines.push('  INVALID_USER_KEY         -> 高德 key 类型不对，要「Web服务」key');
+    lines.push('  Failed to fetch          -> 网络不通或被中间设备拦截（不是 key 问题）');
+  }
   return lines.join('\n');
 }
 document.getElementById('diagGeo').onclick = async () => {
