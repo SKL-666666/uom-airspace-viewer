@@ -365,6 +365,48 @@ BODY_INJECT = """<script>
       CONFIG.keys.tdt = '';
     });
 
+    // ---- 12a0. 用【真实高德 key】打真实接口，端到端验证 ----
+    // 之前所有搜索用例用的都是替身，而替身会掩盖真实字段差异。
+    // 这一步打真接口（key 由 make_probe 从环境变量注入，不写进文件）。
+    await step('search_real_amap', async function(){
+      var KEY = window.__PROBE_AMAP_KEY || '';
+      if (!KEY){ log('ra_skipped', '未注入 key'); return; }
+      CONFIG.keys.amap = KEY;
+      CONFIG.keys.tdt = '';
+      geoCache.clear();
+      var cases = ['首都机场', '华强北', '天安门', '陆家嘴'];
+      for (var i = 0; i < cases.length; i++){
+        var kw = cases[i];
+        searchInput.value = '';
+        searchInput.dispatchEvent(new Event('input', { bubbles: true }));
+        searchInput.value = kw;
+        searchInput.dispatchEvent(new Event('input', { bubbles: true }));
+        await waitFor(function(){
+          return document.querySelectorAll('#searchResults .sres').length > 0
+              || !!q('#searchResults .sempty');
+        }, 20000);
+        var n = document.querySelectorAll('#searchResults .sres').length;
+        var note = q('#searchResults .sempty') ? q('#searchResults .sempty').textContent.slice(0,70) : '';
+        var first = q('#searchResults .sres .sr-n');
+        log('ra_' + i, kw + ' -> ' + n + ' 行' +
+            (first ? '／首条:' + first.textContent : '') + (note ? '／' + note : ''));
+        // 点第一条，验证能定位并出结论
+        if (i === 0 && n > 0){
+          q('#searchResults .sres').click();
+          await waitFor(function(){
+            var b = q('#resVerdict .big');
+            return b && b.textContent && b.textContent !== '查询中…';
+          }, 30000);
+          log('ra_pick_result', q('#resVerdict .big') ? q('#resVerdict .big').textContent : 'NONE');
+          log('ra_pick_coord', q('#resCoord') ? q('#resCoord').textContent : 'NONE');
+        }
+      }
+      CONFIG.keys.amap = '';
+      geoCache.clear();
+      searchInput.value = '';
+      closeSearch();
+    });
+
     // ---- 12a1. 网络层失败（Failed to fetch）要给出可操作提示 ----
     await step('search_netfail', async function(){
       CONFIG.keys.tdt = 'FAKE_TK_FOR_PROBE______________';
@@ -389,6 +431,43 @@ BODY_INJECT = """<script>
       log('nf_not_blaming_key', !/key 无效|非法key/.test(note));
       window.fetch = realFetch;
       CONFIG.keys.tdt = '';
+      geoCache.clear();
+      searchInput.value = '';
+      closeSearch();
+    });
+
+    // ---- 12a1b. 两个通道都失败时，各自的原因必须都看得见 ----
+    // 高德即使出错也返回 HTTP 200（status:"0" + info:"INVALID_USER_KEY"），
+    // 所以"高德不行"可能是 key 类型不对，而不是网络问题。
+    // 之前只显示一份被拼接的大段提示，用户分不清到底哪个坏了。
+    await step('search_both_fail', async function(){
+      CONFIG.keys.tdt = 'FAKE_TK_FOR_PROBE______________';
+      CONFIG.keys.amap = 'FAKE_AMAP_KEY___________________';
+      var realFetch = window.fetch;
+      window.fetch = function(u){
+        var s = String(u);
+        if (s.indexOf('tianditu') >= 0) return Promise.reject(new TypeError('Failed to fetch'));
+        if (s.indexOf('amap') >= 0){
+          return Promise.resolve({ ok:true, status:200,
+            text: function(){ return Promise.resolve(JSON.stringify(
+              { status:'0', info:'INVALID_USER_KEY', infocode:'10001' })); } });
+        }
+        return realFetch.apply(this, arguments);
+      };
+      geoCache.clear();
+      searchInput.value = '';
+      searchInput.dispatchEvent(new Event('input', { bubbles: true }));
+      searchInput.value = '首都机场';
+      searchInput.dispatchEvent(new Event('input', { bubbles: true }));
+      await waitFor(function(){ return !!q('#searchResults .sempty'); }, 20000);
+      var note = q('#searchResults .sempty') ? q('#searchResults .sempty').textContent : '';
+      log('bf_tdt_shown', /天地图/.test(note));
+      log('bf_amap_shown', /高德/.test(note));
+      log('bf_amap_reason_shown', /INVALID_USER_KEY|Web服务|类型/.test(note));
+      log('bf_len', note.length);
+      log('bf_note', note.slice(0, 200).split(String.fromCharCode(10)).join(' / '));
+      window.fetch = realFetch;
+      CONFIG.keys.tdt = ''; CONFIG.keys.amap = '';
       geoCache.clear();
       searchInput.value = '';
       closeSearch();
@@ -736,7 +815,10 @@ out = src[:head_pos] + '\n' + HEAD_INJECT + src[head_pos:]
 
 # ② 注入驱动脚本（主脚本之后、</body> 之前）
 body_pos = out.rindex('</body>')
-out = out[:body_pos] + BODY_INJECT + out[body_pos:]
+# 把高德 key 通过环境变量注入（只在本地自检时用，绝不写进 index.html）
+PROBE_KEY = os.environ.get("UOM_PROBE_AMAP_KEY", "")
+KEY_INJECT = ("<script>window.__PROBE_AMAP_KEY=" + repr(PROBE_KEY) + ";</script>") if PROBE_KEY else ""
+out = out[:body_pos] + KEY_INJECT + BODY_INJECT + out[body_pos:]
 
 dst = os.path.join(ROOT, '_probe.html')
 io.open(dst, 'w', encoding='utf-8').write(out)

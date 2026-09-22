@@ -802,7 +802,7 @@
    alpha 严格为 0 或 255，无抗锯齿中间值，因此判定无歧义。
    瓦片缺失 ⇒ 该区域无适飞空域。 */
 /* 构建标识：用来确认浏览器实际加载的是哪一版，排查缓存问题 */
-const BUILD = 'v18.2';
+const BUILD = 'v19.0';
 
 /* 加载层兜底：放在脚本最前面注册。
    之前把它放在末尾，一旦中间某处抛错就永远不执行，页面会卡死在
@@ -3474,7 +3474,19 @@ async function geoAmap(kw){
     throw new Error('高德：HTTP ' + r.status + ' ' + (text.slice(0, 100) || ''));
   }
   if (!j || j.status !== '1'){
-    throw new Error('高德：' + ((j && (j.info || j.infocode)) || '返回无法解析'));
+    /* 高德即使出错也返回 HTTP 200，判据是 body 里的 status 字段。
+       错误码要翻译成人话 —— 最常见的 INVALID_USER_KEY 几乎都是
+       "key 类型不对"（申请成了 JS API / Android / iOS 类型），
+       而不是 key 写错了。把该怎么做直接写出来，省得来回试。 */
+    const info = String((j && (j.info || j.infocode)) || '返回无法解析');
+    let hint = '';
+    if (/INVALID_USER_KEY/i.test(info)){
+      hint = '。这个 key 无效：必须申请【Web服务】类型的 key，'
+           + '不是 JS API / Android / iOS 类型；刚申请的 key 也可能要等几分钟生效。';
+    } else if (/INVALID_USER_IP|SERVICE_NOT_AVAILABLE|DAILY_QUERY_OVER_LIMIT/i.test(info)){
+      hint = '。服务未开通或超出配额，去高德控制台查看该 key 的服务与用量。';
+    }
+    throw new Error('高德：' + info + hint);
   }
   const pois = j.pois || [];
   report('GEO_AMAP', { n: pois.length });
@@ -3515,8 +3527,16 @@ function probeTdtReachable(timeoutMs = 8000){
 }
 /* 在线通道列表。按顺序尝试，第一个成功即用 —— 天地图要 tk 且要开通「地名搜索」
    服务，高德要另一个 key；两条路都留着，坏一条不至于整个搜索不能用。 */
+/* 在线地名搜索通道。顺序就是优先级。
+   天地图【不在列表里】，原因有实测依据：
+     · 它的搜索域名 api.tianditu.gov.cn 被前置 WAF 拦（响应带
+       Server: CW / Block-Event-Id / HTTP 418），不是网络问题也不是 key 问题
+     · 它还会对宽泛关键词（如「机场」「华强北」）只回统计汇总、不给地点列表
+     · 同一个词换高德能正常出结果
+   注意：天地图【底图】照常保留 —— 瓦片走 t0.tianditu.gov.cn，那个域名是通的，
+   搜索和瓦片是两套域名，互不影响。
+   geoTianditu 函数本身保留，便于将来它恢复了再加回来。 */
 const GEO_PROVIDERS = [
-  { id:'tdt',  label:'天地图', need:'tdt',  run: geoTianditu },
   { id:'amap', label:'高德',   need:'amap', run: geoAmap },
 ];
 
@@ -3525,6 +3545,8 @@ const GEO_PROVIDERS = [
 async function geoSearch(kw){
   const errors = [];
   let tried = 0;
+  let netFailProbe = null;
+  const broadNotes = [];
   for (const p of GEO_PROVIDERS){
     if (!CONFIG.keys[p.need]) { errors.push(p.label + '：未配置 key'); continue; }
     tried++;
@@ -3538,21 +3560,40 @@ async function geoSearch(kw){
     } catch(e){
       errors.push((e && e.message) || String(e));
       if (e && e.netFail){
-        /* 网络层失败：顺手做一次最轻的连通性判断，
-           再给出可操作的建议，而不是只丢一句 Failed to fetch。 */
+        /* 网络层失败【不能就此 return】—— 一条通道的网络问题，不代表另一条也坏。
+           高德走的是完全不同的域名和 CDN，天地图被拦时它往往还能用。
+           之前这里直接 return，等于"天地图网络一挂、整条搜索链就断"，
+           连高德试都不试 —— 用户看到的就是"两个都不行"。 */
         const probe = await probeTdtReachable();
-        return { items: [], used: '', errors: [e.message], netFail: true,
-                 reachable: probe.ok, probeMs: probe.ms, noneConfigured: false };
+        netFailProbe = { ok: probe.ok, ms: probe.ms };
+        continue;                       // 继续试下一个通道（原因已在上面 push 过）
       }
       if (e && e.tooBroad){
-        /* 关键词太宽泛：不是故障，是关键词选得不够具体。
-           这跟"key 不对/网络不通"是两回事，得分开展示。 */
-        return { items: [], used: '', errors: errors, tooBroad: true,
-                 broadCount: e.count || 0, noneConfigured: false };
+        /* 某个通道嫌关键词太宽泛，【不能就此终止整条链】——
+           这是那个通道自己的限制（天地图对宽泛词只回统计汇总），
+           换个通道往往能正常出结果。实测：天地图搜「华强北」说太宽泛，
+           高德同词返回 3 条有效 POI。
+           所以记下来、继续试下一个通道；只有当【所有】通道都嫌太宽泛时，
+           才把它当成最终结论告诉用户。 */
+        broadNotes.push({ label: p.label, count: e.count || 0 });
+        errors.push((e && e.message) || String(e));
+        continue;
       }
     }
   }
-  return { items: [], used: '', errors: errors, noneConfigured: tried === 0 };
+  const out = { items: [], used: '', errors: errors, noneConfigured: tried === 0 };
+  if (netFailProbe){
+    out.netFail = true;
+    out.reachable = netFailProbe.ok;
+    out.probeMs = netFailProbe.ms;
+  }
+  /* 只有当试过的通道【全都】说关键词太宽泛时，才把它当结论。
+     否则（例如某个通道网络挂了、另一个说太宽泛）不该误导用户去改关键词。 */
+  if (!out.netFail && broadNotes.length && broadNotes.length >= tried){
+    out.tooBroad = true;
+    out.broadCount = Math.max.apply(null, broadNotes.map(n => n.count));
+  }
+  return out;
 }
 
 function gotoSearchItem(it){
@@ -3606,17 +3647,20 @@ async function runSearch(kw){
   } else if (netFail){
     const reach = reachable === true ? '能连通'
                 : (reachable === false ? '也连不上' : '未能判定');
-    renderSearch([], '在线搜索网络失败：' + errors.join('；') +
-      '\n天地图瓦片域名' + reach + '（' + (probeMs || 0) + ' ms）。' +
-      '\n可检查：代理/VPN 是否拦了这个域名、浏览器扩展（广告拦截/隐私保护）、' +
-      'Windows 防火墙；或改用高德 key（设置 → 图源与 Key）。');
+    /* 关键：把【每个通道】的失败原因逐条列出来。
+       之前这里只复述天地图一条，高德的失败被整段吞掉 ——
+       用户看到的就是「两个都不行」，却不知道各自为什么不行、该改哪个。 */
+    renderSearch([], '在线搜索失败：' +
+      '\n' + errors.map(e => '· ' + e).join('\n') +
+      '\n（天地图瓦片域名' + reach + '，' + (probeMs || 0) + ' ms）');
   } else if (tooBroad){
     renderSearch([], '「' + kw + '」命中的地点太多，接口只回了统计汇总（' +
       broadCount + ' 条），没有给地点列表。\n请把关键词写得更具体，'
       + '例如「首都机场」而不是「机场」。');
   } else if (noneConfigured){
-    renderSearch([], '在线搜索需要 key：设置 → 图源与 Key 里填天地图 tk '
-      + '或高德 Web服务 key。下面两项不用 key 也能用。');
+    renderSearch([], '在线地名搜索需要高德 key：设置 → 图源与 Key → 高德 · Web服务 key。'
+      + '\n申请地址 console.amap.com/dev/key/app，类型必须选「Web服务」。'
+      + '\n不用 key 也能用的两项：直接输坐标（如 39.90,116.41）、或行政域名。');
   } else {
     /* 把每个通道自己的报错原样显示出来。
        之前只说"在线搜索不可用"，用户根本不知道是没配 key、key 非法、
@@ -4639,6 +4683,7 @@ async function diagGeoTest(){
     ? searchInput.value.trim() : '';
   const kw = typed || '首都机场';
   const lines = ['地名搜索连通性测试（关键词：' + kw + '）', ''];
+  lines.push('（天地图已从搜索链移除，见下方说明；底图不受影响）');
   lines.push('天地图 tk：' + (CONFIG.keys.tdt
     ? '已配置（' + CONFIG.keys.tdt.length + ' 字符）' : '未配置'));
   lines.push('高德 key：' + (CONFIG.keys.amap
