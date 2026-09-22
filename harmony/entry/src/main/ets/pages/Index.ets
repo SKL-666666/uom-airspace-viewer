@@ -1,8 +1,21 @@
 import { webview } from '@kit.ArkWeb';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { BusinessError } from '@kit.BasicServicesKit';
+import { StorageBridge } from '../common/StorageBridge';
 
 const DOMAIN = 0x0000;
+
+/* javaScriptProxy 的参数结构。
+   ArkTS 不允许裸对象字面量（arkts-no-untyped-obj-literals），
+   必须显式声明类型 —— 编译器直接报了这个错。
+   字段与 SDK 里的 JavaScriptProxy 接口一一对应，这里本地声明一份，
+   避免依赖 SDK 内部类型路径。 */
+interface StorageProxyOptions {
+  object: object;
+  name: string;
+  methodList: string[];
+  controller: WebviewController;
+}
 
 /**
  * 主页面：加载【应用内置】的网页与数据。
@@ -25,6 +38,8 @@ struct Index {
   @StorageLink('localPort') localPort: number = -1;
   /* 定位权限结果由 EntryAbility 写入 AppStorage，这里同步读取 */
   @StorageLink('locationGranted') locationGranted: boolean = false;
+  /* 由 EntryAbility 初始化后放进 AppStorage 的存储桥 */
+  @StorageLink('storageBridge') storageBridge: StorageBridge | null = null;
   @State url: string = '';
   @State loading: boolean = true;
   /** 页面请求定位但没权限时，显示一条可关闭的提示 */
@@ -46,7 +61,21 @@ struct Index {
       if (this.url) {
         Web({ src: this.url, controller: this.controller })
           .javaScriptAccess(true)
-          .domStorageAccess(true)          // 页面用 localStorage 存设置与收藏
+          .domStorageAccess(true)          // 页面仍可用 localStorage（网页版走它）
+          /* 注入原生存储桥，名为 UomNativeStorage —— 与 Android 端同名，
+             页面代码不需要区分平台。
+             为什么需要：localStorage 按 origin 隔离，而页面从
+             http://127.0.0.1:<port>/ 加载，端口变化会让 origin 变化，
+             API key / 收藏 / 主题字号就全部读不到。
+             注意：这里【不能】把它列进 asyncMethodList —— 
+             页面是按同步方式读取的（启动时就要定底图和字号），
+             列为异步会让页面拿到 Promise。 */
+          .javaScriptProxy({
+            object: this.storageBridge as object,
+            name: 'UomNativeStorage',
+            methodList: ['getItem', 'setItem', 'removeItem', 'keys'],
+            controller: this.controller,
+          } as StorageProxyOptions)
           .fileAccess(true)
           .imageAccess(true)
           .onlineImageAccess(true)         // 底图是第三方瓦片，需要联网

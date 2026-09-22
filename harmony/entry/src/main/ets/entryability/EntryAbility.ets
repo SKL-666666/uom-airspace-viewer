@@ -2,6 +2,7 @@ import { AbilityConstant, UIAbility, Want, abilityAccessCtrl, Permissions } from
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
 import { RangeHttpServer } from '../common/RangeHttpServer';
+import { StorageBridge } from '../common/StorageBridge';
 
 const DOMAIN = 0x0000;
 
@@ -9,6 +10,10 @@ const DOMAIN = 0x0000;
    页面重建（旋转、切后台回来）不应导致服务重启，否则数据通道会断。
    页面通过 AppStorage 读端口。 */
 const server: RangeHttpServer = new RangeHttpServer();
+
+/* 用户数据的原生存储。放在 Ability 层与 Ability 同生命周期，
+   页面重建不会导致重新初始化（重新初始化会短暂读不到数据）。 */
+const storage: StorageBridge = new StorageBridge();
 
 export default class EntryAbility extends UIAbility {
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
@@ -30,6 +35,17 @@ export default class EntryAbility extends UIAbility {
     //   ② 权限申请需要 UIAbilityContext，页面拿到的 context 类型不同。
     // 申请结果不影响启动 —— 用户拒绝也能正常用，只是定位按钮会提示去设置里开。
     this.requestLocationPermission();
+
+    /* 先初始化用户数据存储，再起服务、加载页面 ——
+       顺序很重要：页面启动时就要读 API key / 主题 / 字号，
+       存储没就绪的话首屏会用默认值，然后数据"看起来又丢了"。 */
+    storage.init(this.context).then(() => {
+      AppStorage.setOrCreate('storageBridge', storage);
+      hilog.info(DOMAIN, 'UOMViewer', '用户数据存储已就绪');
+    }).catch((e: Object) => {
+      AppStorage.setOrCreate('storageBridge', storage);   // 仍注入，退化为内存态
+      hilog.error(DOMAIN, 'UOMViewer', '用户数据存储初始化异常 %{public}s', JSON.stringify(e));
+    });
 
     // 先起本地数据服务，把端口放进 AppStorage，页面构建时读取。
     // 页面加载 http://127.0.0.1:<port>/index.html —— 与本地开发用 serve.py 同构，

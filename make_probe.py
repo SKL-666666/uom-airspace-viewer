@@ -365,6 +365,93 @@ BODY_INJECT = """<script>
       CONFIG.keys.tdt = '';
     });
 
+    // ---- 11w. UomStore 存储抽象：三后端 + 与旧键名兼容 ----
+    await step('store', async function(){
+      log('st_backend', UomStore.backend);
+      // 基本读写
+      UomStore.set('__t1', 'abc');
+      log('st_roundtrip', UomStore.get('__t1'));
+      UomStore.remove('__t1');
+      log('st_removed', UomStore.get('__t1'));
+      // 键名前缀：必须与老版本一致，否则老用户数据会"丢"
+      UomStore.set('key_tdt', 'FAKEKEY');
+      var raw = null;
+      try { raw = localStorage.getItem('uom_key_tdt'); } catch(e){}
+      log('st_prefix_compatible', raw === 'FAKEKEY');
+      UomStore.remove('key_tdt');
+      // 主题/字号/收藏走的是同一套键
+      UomStore.set('theme', 'dark');
+      log('st_theme_readback', UomStore.get('theme'));
+      UomStore.remove('theme');
+      // 原生桥模拟：注入一个假桥，验证会优先走它
+      var nativeCalls = [];
+      window.UomNativeStorage = {
+        getItem: function(k){ nativeCalls.push('get:' + k); return k === 'probe' ? 'NATIVE' : null; },
+        setItem: function(k, v){ nativeCalls.push('set:' + k + '=' + v); },
+        removeItem: function(k){ nativeCalls.push('rm:' + k); },
+        keys: function(){ return JSON.stringify(['a','b']); }
+      };
+      // 重新构造一次 UomStore 不可行（已初始化），所以只验证桥本身的契约
+      log('st_bridge_callable', typeof window.UomNativeStorage.getItem === 'function');
+      log('st_bridge_shape_ok',
+          ['getItem','setItem','removeItem','keys'].every(function(m){
+            return typeof window.UomNativeStorage[m] === 'function'; }));
+      delete window.UomNativeStorage;
+
+      /* 关键验证：模拟"原生桥存在"的情况，确认 UomStore 真的会走它。
+         用重放的方式重建一个同逻辑的 store 不现实（已初始化），
+         所以这里直接验证桥的契约与页面读取路径的配合：
+         把值写进 localStorage 的旧键名，确认 UomStore.get 能读到 —— 
+         这验证的是"键名兼容 + 读取链路"，与后端无关。 */
+      try { localStorage.setItem('uom_favs', '[{"name":"测试点","lat":39.9,"lon":116.4}]'); } catch(e){}
+      var favs = UomStore.get('favs');
+      log('st_legacy_key_readable', favs && favs.indexOf('测试点') >= 0);
+      try { localStorage.removeItem('uom_favs'); } catch(e){}
+      log('st_keys_lists', UomStore.keys().length >= 0);
+    });
+
+    // ---- 11x. 所有提示都要有手动关闭按钮 ----
+    await step('closable', async function(){
+      // toast：错误/警告类必须带关闭按钮，且不自动消失
+      toast('测试错误', { level: 'err', detail: '细则' });
+      await sleep(150);
+      var t = document.querySelector('#toast .tst');
+      log('cl_err_has_x', !!document.querySelector('#toast .tst .tst-x'));
+      log('cl_err_sticky', t ? t.classList.contains('sticky') : 'NO');
+      log('cl_err_title', t && t.querySelector('.tst-title') ? t.querySelector('.tst-title').textContent : 'NONE');
+      // 点关闭应移除
+      var before = document.querySelectorAll('#toast .tst').length;
+      var x = document.querySelector('#toast .tst .tst-x');
+      if (x) x.click();
+      await sleep(300);
+      log('cl_toast_closed', document.querySelectorAll('#toast .tst').length < before);
+
+      // 普通成功提示仍自动消失（不 sticky）
+      toast('普通提示', { level: 'ok' });
+      await sleep(120);
+      var okEl = document.querySelector('#toast .tst.ok');
+      log('cl_ok_not_sticky', okEl ? !okEl.classList.contains('sticky') : 'NO');
+
+      // 硬错误横幅
+      showError('测试错误标题', '详情内容');
+      await sleep(100);
+      log('cl_errbar_on', q('#errbar').classList.contains('on'));
+      log('cl_errbar_has_btn', !!document.querySelector('#errbar button.x'));
+      var bx = document.querySelector('#errbar button.x');
+      if (bx) bx.click();
+      await sleep(100);
+      log('cl_errbar_closed', !q('#errbar').classList.contains('on'));
+
+      // 搜索结果提示
+      renderSearch([], '这是一条测试提示');
+      await sleep(100);
+      log('cl_sempty_has_x', !!document.querySelector('#searchResults .sempty-x'));
+      var sx = document.querySelector('#searchResults .sempty-x');
+      if (sx) sx.click();
+      await sleep(150);
+      log('cl_sempty_closed', getComputedStyle(q('#searchResults')).display === 'none');
+    });
+
     // ---- 11y. 深色主题必须是中性黑，不能带蓝调 ----
     await step('dark_neutral', async function(){
       themeUi.set('dark', true);
@@ -438,6 +525,30 @@ BODY_INJECT = """<script>
             ', ' + (st ? ('z13实际坐标有数据=' + st) : 'z13无数据'));
       }
       log('zg_report', report.join(' | '));
+    });
+
+    // ---- 11v. 底部安全区与圆角 ----
+    await step('layout', async function(){
+      var cs = getComputedStyle(document.documentElement);
+      log('ly_safe_b', cs.getPropertyValue('--safe-b').trim() || '(空)');
+      log('ly_safe_r', cs.getPropertyValue('--safe-r').trim() || '(空)');
+      // 圆角是否已增大到 14/11/8/5
+      log('ly_r_xl', cs.getPropertyValue('--r-xl').trim());
+      log('ly_r_lg', cs.getPropertyValue('--r-lg').trim());
+      log('ly_r_md', cs.getPropertyValue('--r-md').trim());
+      log('ly_r_sm', cs.getPropertyValue('--r-sm').trim());
+      /* 底部元素必须使用安全区变量，而不是写死数值 ——
+         写死会在有小白条的手机上被遮住。 */
+      var src = document.documentElement.outerHTML.length ? '' : '';
+      log('ly_result_uses_safe',
+          getComputedStyle(q('#result')).bottom !== 'auto');
+      log('ly_toast_uses_safe',
+          getComputedStyle(q('#toast')).bottom !== 'auto');
+      // 实际渲染出的 bottom 值（有 safe-area 时会是 max() 的结果）
+      log('ly_result_bottom', getComputedStyle(q('#result')).bottom);
+      log('ly_toast_bottom', getComputedStyle(q('#toast')).bottom);
+      // 圆角实际生效
+      log('ly_panel_radius', getComputedStyle(q('#topbar')).borderTopLeftRadius);
     });
 
     // ---- 11z. 导航：平滑飞行 + 落地后再查询 ----

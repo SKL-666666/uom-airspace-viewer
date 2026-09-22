@@ -85,6 +85,14 @@ public class MainActivity extends AppCompatActivity {
         s.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
         s.setCacheMode(WebSettings.LOAD_DEFAULT);
 
+        /* 注入原生存储桥，名为 UomNativeStorage。
+           为什么需要它：localStorage 按 origin 隔离，而页面是从
+           http://127.0.0.1:<port>/ 加载的 —— 端口一变 origin 就变，
+           API key / 收藏 / 主题字号全部读不到（用户报的"切后台回来数据没了"）。
+           存进 SharedPreferences 就与 origin 无关了。
+           必须在 loadUrl 之前注入，否则页面启动时读不到已有数据。 */
+        webView.addJavascriptInterface(new StorageBridge(this), "UomNativeStorage");
+
         webView.setWebViewClient(new WebViewClient());
         /* 关键：WebView 里的 navigator.geolocation 会先问宿主
            "这个源能不能用定位"。默认实现是不应答 = 当作拒绝，
@@ -116,7 +124,7 @@ public class MainActivity extends AppCompatActivity {
 
         // 先起本地服务，再加载页面。端口由系统分配，避免与其它应用冲突。
         server = new LocalAssetServer(this);
-        int port = server.start();
+        int port = server.start();   // 内部优先用固定端口，被占用才回退
         if (port > 0) {
             webView.loadUrl("http://127.0.0.1:" + port + "/index.html");
         } else {

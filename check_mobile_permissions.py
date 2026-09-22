@@ -116,6 +116,67 @@ ok('APPROXIMATELY_LOCATION' in ab, '两个位置权限成对申请（只申请 L
 # module.json5 里的 reason 字段：位置权限在 HarmonyOS 上要求填申请理由
 ok('reason' in mod, '权限声明含 reason（HarmonyOS 对位置权限有此要求）')
 
+# ---------- 用户数据持久化 ----------
+# 背景：localStorage 按 origin 隔离，而页面从 http://127.0.0.1:<port>/ 加载。
+# 端口一变 origin 就变，用户数据全部读不到（"切后台回来数据没了"）。
+# 所以两端都要注入原生存储桥，页面统一走 UomStore 这一层。
+print('\n— 用户数据持久化 —')
+index_html = io.open(os.path.join(ROOT, 'index.html'), encoding='utf-8').read()
+ok('const UomStore' in index_html, '网页端有 UomStore 存储抽象')
+
+# 除 UomStore 内部，不应再有直接的 localStorage 调用 —— 漏一处就少一份数据
+_i = index_html.index('const UomStore = (function(){')
+_j = index_html.index('})();', _i)
+outside = (index_html[:_i] + index_html[_j:]).count('localStorage.')
+ok(outside == 0, 'UomStore 之外没有直接操作 localStorage',
+   '还有 %d 处' % outside if outside else '')
+ok('UomNativeStorage' in index_html, '网页端引用了原生桥 UomNativeStorage')
+ok("PREFIX = 'uom_'" in index_html,
+   'UomStore 前缀为 uom_（与旧数据键名兼容，老用户数据不丢）')
+
+_ab = os.path.join(ROOT, 'android', 'app', 'src', 'main', 'java',
+                   'com', 'skl', 'uomviewer', 'StorageBridge.java')
+and_java = io.open(_ab, encoding='utf-8').read() if os.path.isfile(_ab) else ''
+ok('@JavascriptInterface' in and_java, 'Android 桥用 @JavascriptInterface（必须同步）')
+ok('SharedPreferences' in and_java, 'Android 存进 SharedPreferences')
+ok(all(m in and_java for m in ['getItem', 'setItem', 'removeItem', 'keys']),
+   'Android 桥暴露 get/set/remove/keys 四个方法')
+
+_hb = os.path.join(ROOT, 'harmony', 'entry', 'src', 'main', 'ets',
+                   'common', 'StorageBridge.ets')
+har_ets = io.open(_hb, encoding='utf-8').read() if os.path.isfile(_hb) else ''
+ok(len(har_ets) > 0, 'HarmonyOS 有 StorageBridge')
+ok('preferences' in har_ets, 'HarmonyOS 存进 Preferences')
+ok(all(m in har_ets for m in ['getItem', 'setItem', 'removeItem', 'keys']),
+   'HarmonyOS 桥暴露同样的四个方法')
+ok('javaScriptProxy' in idx, 'HarmonyOS 用 javaScriptProxy 注入桥')
+# 必须检查【代码】里没有 asyncMethodList，而不是整份文件 ——
+# 注释里提到它是正常的（我在注释里写明了"不要列进去"），
+# 按整份文件搜会把正确代码判成错。先把注释去掉再查。
+_idx_code = re.sub(r'/\*[\s\S]*?\*/', '', idx)
+_idx_code = re.sub(r'//[^\n]*', '', _idx_code)
+ok('asyncMethodList' not in _idx_code,
+   '桥方法未列进 asyncMethodList（列了会变异步，而页面按同步读取）')
+
+# ---------- 底部安全区（手机小白条） ----------
+print('\n— 底部安全区 —')
+ok('safe-area-inset-bottom' in index_html, '使用了 safe-area-inset-bottom')
+ok('--safe-b' in index_html and '--safe-r' in index_html, '定义了安全区变量')
+for _sel in ['#result{', '#coordBar{', '#toast{']:
+    _seg = index_html[index_html.index(_sel):index_html.index(_sel) + 320]
+    ok('var(--safe-b)' in _seg,
+       '%s 使用安全区变量（写死会在有小白条的设备上被遮住）' % _sel.rstrip('{'))
+
+# ---------- 提示都要能手动关闭 ----------
+print('\n— 提示的手动关闭入口 —')
+ok('tst-x' in index_html, 'toast 有手动关闭按钮')
+ok('sempty-x' in index_html, '搜索结果提示有手动关闭按钮')
+ok('diagHide' in index_html, '诊断输出有收起按钮')
+ok("id=\"errX\"" in index_html or 'errX' in index_html, '错误横幅有手动关闭按钮')
+# 报错/警告类提示不该自动消失（要用户看完再处理）
+ok('needsAttention' in index_html,
+   '错误/警告类 toast 默认不自动消失（避免用户来不及看）')
+
 print('\n' + ('=== 全部通过：%d 项 ===' % total if fail == 0
              else '=== %d/%d 项未通过 ===' % (fail, total)))
 sys.exit(0 if fail == 0 else 1)

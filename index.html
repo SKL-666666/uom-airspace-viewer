@@ -35,10 +35,10 @@
     /* 圆角刻度：克制。之前 18px 的浮层圆角 + 毛玻璃 + 多层柔光投影，
        是"AI 生成界面"最典型的三个特征，这一轮全部收掉：
        现成的不透明面板、单层浅投影、圆角控制在 10px 以内。 */
-    --r-xl:.625rem;         /* 10px 浮层面板 */
-    --r-lg:.5rem;           /* 8px 卡片 */
-    --r-md:.375rem;         /* 6px 控件 */
-    --r-sm:.25rem;          /* 4px 小元素 */
+    --r-xl:.875rem;         /* 14px 浮层面板 */
+    --r-lg:.6875rem;        /* 11px 卡片 */
+    --r-md:.5rem;           /* 8px 控件 */
+    --r-sm:.3125rem;        /* 5px 小元素 */
     --sh-1:0 1px 2px rgba(15,23,42,.06);
     --sh-2:0 1px 3px rgba(15,23,42,.10);
     --sh-3:0 2px 8px rgba(15,23,42,.14);
@@ -176,11 +176,26 @@
   .sres .sr-d{flex:0 1 auto;min-width:0;color:var(--tx2);font-size:.6875rem;
               overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:45%}
   .sres .sr-n{min-width:0}
-  .sempty{padding:.75rem .625rem;color:var(--tx2);font-size:.75rem;text-align:center}
+  .sempty{position:relative;padding:.75rem 1.75rem .75rem .625rem;color:var(--tx2);
+          font-size:.75rem;text-align:center;line-height:1.6}
+  .sempty .sempty-x{position:absolute;top:.375rem;right:.25rem;width:1.25rem;height:1.25rem;
+        padding:0;border:none;background:transparent;color:var(--tx2);cursor:pointer;
+        border-radius:var(--r-sm);display:flex;align-items:center;justify-content:center;
+        line-height:1}
+  .sempty .sempty-x:hover{background:var(--panel3);color:var(--tx)}
 
   /* ---------- 右侧竖工具条 ---------- */
   #toolbar{position:absolute;right:.625rem;top:50%;transform:translateY(-50%);
            z-index:1000;display:flex;flex-direction:column;gap:.25rem}
+  /* 底部安全区适配（手机上的小白条 / 手势条）。
+     屏幕底部有一条系统占用的区域，内容压进去会被遮住或误触。
+     环境变量 env(safe-area-inset-bottom) 在支持时给出实际高度，
+     不支持时为 0；用 max() 取"至少 0.625rem"保证桌面端不受影响。 */
+  :root{
+    --safe-b:max(.625rem, env(safe-area-inset-bottom, 0px));
+    --safe-l:max(.625rem, env(safe-area-inset-left, 0px));
+    --safe-r:max(.625rem, env(safe-area-inset-right, 0px));
+  }
   .tb{width:2.25rem;height:2.25rem;padding:0;flex:none;
       display:flex;align-items:center;justify-content:center;
       background:var(--solid);color:var(--tx);
@@ -195,8 +210,8 @@
   /* ---------- 底部坐标读数 ----------
      只留一个坐标读数，放在右下角。原来的底部状态条（5 个徽章）左下方正好
      压住 Leaflet 的缩放按钮，而且信息本来就冗余 —— 那些状态已移进设置面板。 */
-  #coordBar{position:absolute;right:.625rem;
-            bottom:calc(.625rem + env(safe-area-inset-bottom,0px));
+  #coordBar{position:absolute;right:var(--safe-r);
+            bottom:var(--safe-b);
             z-index:900;font-size:.6875rem;color:var(--tx2);
             font-family:ui-monospace,Menlo,Consolas,monospace;
             background:var(--solid);border:1px solid var(--line);
@@ -304,7 +319,7 @@
      桌面限宽居中，移动端贴底。带拖拽手柄，可收起为一行。
      做成抽屉而不是右上角小卡片，是为了移动端不用再维护第二套布局。 */
   #result{left:50%;transform:translateX(-50%);width:min(28rem,calc(100% - 1.25rem));
-          bottom:calc(.625rem + env(safe-area-inset-bottom,0px));
+          bottom:var(--safe-b);
           max-height:min(70vh,34rem);overflow-y:auto;padding:0;
           background:var(--sheet);border-radius:var(--r-xl);box-shadow:var(--sh-3)}
   #resGrip{position:sticky;top:0;z-index:2;display:flex;align-items:center;
@@ -370,19 +385,23 @@
   #backdrop.on{display:block}
   #errbar{display:none;position:absolute;top:var(--top-h);left:.625rem;right:.625rem;
           z-index:1500;background:var(--no-bg);border:1px solid var(--no-line);
-          color:#7d2a25;border-radius:var(--r-lg);padding:.625rem .75rem;
+          color:#7d2a25;border-radius:var(--r-lg);padding:.625rem 2.25rem .625rem .75rem;
           font-size:.71875rem;line-height:1.6;max-height:34vh;overflow-y:auto;
           white-space:pre-wrap;box-shadow:var(--sh-2);
           font-family:ui-monospace,Menlo,Consolas,monospace}
   :root[data-theme="dark"] #errbar{color:#f0b0a7}
   #errbar.on{display:block}
-  #errbar .x{position:absolute;top:.375rem;right:.5625rem;cursor:pointer;font-size:.875rem}
+  #errbar .x{position:absolute;top:.375rem;right:.375rem;width:1.5rem;height:1.5rem;
+             padding:0;border:none;background:transparent;color:inherit;opacity:.75;
+             border-radius:var(--r-sm);display:flex;align-items:center;
+             justify-content:center;cursor:pointer;line-height:1}
+  #errbar .x:hover{opacity:1;background:rgba(0,0,0,.06)}
 
   /* ---------- 轻提示 ----------
      右下角浮出、自动消失，用来替代 alert()。
      左侧色条区分性质，其余保持与面板一致的观感。 */
-  #toast{position:absolute;right:.625rem;
-         bottom:calc(2.375rem + env(safe-area-inset-bottom,0px));
+  #toast{position:absolute;right:var(--safe-r);
+         bottom:calc(var(--safe-b) + 1.75rem);
          z-index:1800;display:flex;flex-direction:column;gap:.375rem;
          align-items:flex-end;pointer-events:none;max-width:min(22.5rem,86vw)}
   #toast .tst{pointer-events:auto;width:100%;background:var(--solid);
@@ -397,6 +416,17 @@
   #toast .tst .tst-detail{color:var(--tx2);margin-top:.1875rem;white-space:pre-wrap}
   #toast .tst .tst-act{margin-top:.375rem;display:flex;gap:.375rem}
   #toast .tst .tst-act>button{width:auto;padding:.1875rem .5625rem;font-size:.6875rem}
+  /* 每条提示右上角的关闭按钮。
+     之前 toast 只能等它自动消失 —— 报错信息往往需要看清楚再处理，
+     自动消失等于把信息夺走了。 */
+  #toast .tst .tst-x{position:absolute;top:.25rem;right:.25rem;width:1.25rem;height:1.25rem;
+                     padding:0;border:none;background:transparent;color:var(--tx2);
+                     border-radius:var(--r-sm);display:flex;align-items:center;
+                     justify-content:center;cursor:pointer;line-height:1}
+  #toast .tst .tst-x:hover{background:var(--panel3);color:var(--tx)}
+  #toast .tst{position:relative;padding-right:1.75rem}
+  /* 有取消按钮的提示不该自动消失：用户可能正在读 */
+  #toast .tst.sticky{animation:none}
   #toast .tst.out{opacity:0;transform:translateY(6px);
                   transition:opacity .16s ease,transform .16s ease}
   @keyframes tst-in{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
@@ -459,16 +489,18 @@
     #side{top:0;bottom:0;left:0;width:min(86vw,20rem);max-height:none;
           border-radius:0 var(--r-lg) var(--r-lg) 0;z-index:1200;
           transform:translateX(-102%);transition:transform .22s var(--ease);
-          padding-bottom:calc(.75rem + env(safe-area-inset-bottom,0px))}
+          padding-bottom:calc(var(--safe-b) + .5rem)}
     #side.on{transform:translateX(0);display:flex}
     #panelFav,#panelData{top:0;bottom:0;right:0;left:auto;width:min(90vw,22rem);
           max-height:none;border-radius:var(--r-lg) 0 0 var(--r-lg);z-index:1200;
           transform:translateX(102%);transition:transform .22s var(--ease);
-          padding-bottom:calc(.75rem + env(safe-area-inset-bottom,0px))}
+          padding-bottom:calc(var(--safe-b) + .5rem)}
     #panelFav.on,#panelData.on{transform:translateX(0)}
-    #result{width:calc(100% - .875rem);max-height:62vh;
-            bottom:calc(.4375rem + env(safe-area-inset-bottom,0px))}
-    #toolbar{right:.4375rem;gap:.25rem}
+    #result{width:calc(100% - .875rem);max-height:62vh;bottom:var(--safe-b)}
+    /* 窄屏：工具条垂直居中，但要保证不会压到手机底部的小白条/手势条。
+           屏幕不够高时（横屏手机）改为靠上定位并留出底部空间。 */
+    #toolbar{right:var(--safe-r);gap:.25rem;
+             max-height:calc(100% - var(--safe-b) - 4rem)}
     .tb{width:2.25rem;height:2.25rem}
     #toast{max-width:calc(100% - .875rem)}
     .row{padding:.6875rem 0;font-size:.84375rem}
@@ -653,11 +685,16 @@
     <div class="btnrow">
       <button id="diagGeo">测试地名搜索</button>
     </div>
-    <textarea id="diagOut" readonly rows="9"
-      style="margin-top:.4375rem;display:none;width:100%;font-size:.625rem;
-             font-family:ui-monospace,Menlo,Consolas,monospace;
-             border:1px solid var(--line);border-radius:var(--r-sm);padding:.375rem;
-             resize:vertical"></textarea>
+    <div id="diagOutWrap" style="display:none;margin-top:.4375rem">
+      <div style="display:flex;justify-content:flex-end;margin-bottom:.25rem">
+        <button id="diagHide" style="width:auto;padding:.125rem .5rem;font-size:.625rem">关闭输出</button>
+      </div>
+      <textarea id="diagOut" readonly rows="9"
+        style="width:100%;font-size:.625rem;
+               font-family:ui-monospace,Menlo,Consolas,monospace;
+               border:1px solid var(--line);border-radius:var(--r-sm);padding:.375rem;
+               resize:vertical"></textarea>
+    </div>
     <div class="note">自检在浏览器里跑，线上也能用。</div>
   </details>
 
@@ -820,7 +857,7 @@
    alpha 严格为 0 或 255，无抗锯齿中间值，因此判定无歧义。
    瓦片缺失 ⇒ 该区域无适飞空域。 */
 /* 构建标识：用来确认浏览器实际加载的是哪一版，排查缓存问题 */
-const BUILD = 'v19.2';
+const BUILD = 'v20.0';
 
 /* 加载层兜底：放在脚本最前面注册。
    之前把它放在末尾，一旦中间某处抛错就永远不执行，页面会卡死在
@@ -852,9 +889,18 @@ function report(tag, obj){
 function showError(title, detail){
   const bar = document.getElementById('errbar');
   if (bar){
-    bar.innerHTML = '<span class="x" id="errX">×</span><b>' + title + '</b>\n' + (detail || '');
+    /* 用真 <button> 而不是一个文字的 ×：点击区域更大、可键盘聚焦，
+       移动端不至于点不中。#errbar 有 white-space:pre-wrap，换行能正常显示。 */
+    bar.innerHTML =
+      '<button class="x" id="errX" type="button" title="关闭" aria-label="关闭错误提示">'
+      + '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor"'
+      + ' stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>'
+      + '</button>'
+      + '<b>' + escapeHtml(title) + '</b>' + '\n' + escapeHtml(detail || '');
     bar.classList.add('on');
     const x = document.getElementById('errX');
+    /* 用 onclick 而不是 addEventListener：每次 showError 都重建 DOM，
+       旧监听随节点一起被丢弃，不会累积。 */
     if (x) x.onclick = () => bar.classList.remove('on');
   }
   report('ERROR', title + ' | ' + (detail || ''));
@@ -895,6 +941,27 @@ function toast(msg, o){
     setTimeout(() => { if (item.parentNode) item.parentNode.removeChild(item); }, 170);
   };
 
+  /* 每条提示都给一个手动关闭按钮。
+     之前只能等它自动消失，而报错信息往往需要看清楚再照做 ——
+     自动消失等于把信息夺走。带操作按钮的提示还会标 sticky 取消自动消失，
+     因为它需要用户读完再决定点不点。 */
+  const x = document.createElement('button');
+  x.className = 'tst-x';
+  x.type = 'button';
+  x.title = '关闭';
+  x.setAttribute('aria-label', '关闭提示');
+  x.innerHTML = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none"'
+    + ' stroke="currentColor" stroke-width="2.2" stroke-linecap="round">'
+    + '<path d="M6 6l12 12M18 6L6 18"/></svg>';
+  x.onclick = (ev) => { ev.stopPropagation(); close(); };
+  item.appendChild(x);
+
+  /* 出错、警告、以及带操作的提示默认【不自动消失】：
+     这几类都需要用户看完并可能照做，自动收起会让用户来不及看。
+     普通成功提示仍自动消失，避免堆在屏幕上。 */
+  const needsAttention = o.level === 'err' || o.level === 'warn' || !!o.action;
+  if (needsAttention) item.classList.add('sticky');
+
   if (o.action){
     const row = document.createElement('div');
     row.className = 'tst-act';
@@ -909,7 +976,14 @@ function toast(msg, o){
   /* 只保留最近 3 条，避免批量操作时刷屏盖住地图 */
   while (host.children.length > 3) host.removeChild(host.firstChild);
 
-  const ms = o.ms != null ? o.ms : (o.action ? 9000 : 3200);
+  /* ms 语义：
+       null/undefined → 按类型取默认（sticky 类不自动关，普通提示 3.2s）
+       0              → 不自动关
+       正数            → 该毫秒数后关闭
+     显式传 ms 时以它为准，便于调用方自己决定。 */
+  let ms;
+  if (o.ms != null) ms = o.ms;
+  else ms = needsAttention ? 0 : 3200;
   if (ms > 0) setTimeout(close, ms);
   return { close: close };
 }
@@ -1049,6 +1123,130 @@ const UOM_DATA_DATE = '2026-05-23';
 const DJI_DATA_DATE = '2026-06-03';
 
 /* =====================================================================
+   用户数据存储（UomStore）
+
+   为什么需要这一层抽象：
+     localStorage 是【按 origin 隔离】的。而在移动端，页面是从
+     http://127.0.0.1:<port>/ 加载的 —— 端口每次启动都可能不同，
+     于是 origin 变化，localStorage 里的全部数据读不到。
+     现象就是用户说的："切到后台再回来，API key、收藏点、主题字号全没了"。
+
+   解决思路：
+     网页端只认 UomStore 这一个入口；移动端由宿主注入原生实现
+     （Android 写 SharedPreferences，HarmonyOS 写 Preferences），
+     数据存在应用私有目录里 —— 与 origin 完全无关，端口怎么变都不丢。
+
+   为什么做成【同步】接口：
+     页面启动时就要读 key / 主题 / 字号（不能在渲染后再补），
+     所以不能是 Promise。好在两端都支持同步的 JS 桥：
+       · Android 的 @JavascriptInterface 方法直接返回 String
+       · HarmonyOS 的 javaScriptProxy 默认就是同步调用
+         （只有列进 asyncMethodList 的方法才是异步）
+
+   回退链：原生桥 → localStorage → 内存。
+     任何一层失败都不影响页面可用，最差情况是"设置不持久"而不是报错。
+   ===================================================================== */
+const UomStore = (function(){
+  const PREFIX = 'uom_';
+  /** 内存兜底：连 localStorage 都不可用时至少保证本次会话内一致 */
+  const mem = new Map();
+
+  /* 原生桥的可用性探测。
+     两端的桥都暴露同样的方法名，页面不关心自己跑在哪个平台。
+     用 typeof 检查而不是直接调用，避免在纯浏览器里抛错。 */
+  function nativeBridge(){
+    try {
+      const b = window.UomNativeStorage;
+      if (b && typeof b.getItem === 'function') return b;
+    } catch(e){ /* 桥不存在 */ }
+    return null;
+  }
+
+  function lsGet(k){
+    try { return localStorage.getItem(PREFIX + k); } catch(e){ return null; }
+  }
+  function lsSet(k, v){
+    try { localStorage.setItem(PREFIX + k, v); } catch(e){ /* 隐私模式等 */ }
+  }
+  function lsRemove(k){
+    try { localStorage.removeItem(PREFIX + k); } catch(e){}
+  }
+  function lsKeys(){
+    const out = [];
+    try {
+      for (let i = 0; i < localStorage.length; i++){
+        const k = localStorage.key(i);
+        if (k && k.indexOf(PREFIX) === 0) out.push(k.slice(PREFIX.length));
+      }
+    } catch(e){}
+    return out;
+  }
+
+  let backend = 'memory';
+  try {
+    if (nativeBridge()) backend = 'native';
+    else {
+      localStorage.setItem(PREFIX + '__probe', '1');
+      localStorage.removeItem(PREFIX + '__probe');
+      backend = 'localStorage';
+    }
+  } catch(e){ backend = 'memory'; }
+
+  return {
+    /** 当前后端，供诊断显示：native / localStorage / memory */
+    get backend(){ return backend; },
+
+    get(k){
+      if (backend === 'native'){
+        try {
+          const v = nativeBridge().getItem(k);
+          /* 原生返回 null（Java/ArkTS 的 null 过桥后可能是 null 或 'null'），
+             统一成 null，否则调用方会拿到字符串 "null" 这种脏值 */
+          return (v === null || v === undefined || v === 'null') ? null : String(v);
+        } catch(e){ /* 落到下面 */ }
+      }
+      if (backend === 'localStorage') return lsGet(k);
+      return mem.has(k) ? mem.get(k) : null;
+    },
+
+    set(k, v){
+      const sv = String(v);
+      /* 三层都写：原生写失败也不至于彻底丢，localStorage 还能兜住。
+         写入是幂等的，多写一次的成本可以忽略。 */
+      if (backend === 'native'){
+        try { nativeBridge().setItem(k, sv); } catch(e){}
+      }
+      if (backend !== 'memory') lsSet(k, sv);
+      mem.set(k, sv);
+    },
+
+    remove(k){
+      if (backend === 'native'){
+        try { nativeBridge().removeItem(k); } catch(e){}
+      }
+      if (backend !== 'memory') lsRemove(k);
+      mem.delete(k);
+    },
+
+    /* 列出所有键。原生后端不提供遍历时退回 localStorage 或内存。 */
+    keys(){
+      if (backend === 'native'){
+        try {
+          const raw = nativeBridge().keys();
+          if (raw){
+            let arr = null;
+            try { arr = JSON.parse(raw); } catch(e){}
+            if (Array.isArray(arr)) return arr;
+          }
+        } catch(e){}
+      }
+      if (backend === 'localStorage') return lsKeys();
+      return Array.from(mem.keys());
+    }
+  };
+})();
+
+/* =====================================================================
    API Key 管理
 
    每个需要 key 的图源在这里登记一条，界面上会自动生成对应输入框。
@@ -1070,7 +1268,7 @@ const CONFIG = {
   keys: {},
   custom: []          // 用户自定义图源 [{key,label,url,sub,tms}]
 };
-KEYS.forEach(k => { CONFIG.keys[k.id] = localStorage.getItem('uom_key_' + k.id) || ''; });
+KEYS.forEach(k => { CONFIG.keys[k.id] = UomStore.get('key_' + k.id) || ''; });
 
 /* 旧版本把天地图 key 存在 'uom_tdt_key'，后来统一成 'uom_key_<id>' 时漏了迁移，
    导致老用户存过的 key 变成孤儿数据 —— 天地图带着空 tk 请求会被 WAF 拦掉
@@ -1080,23 +1278,23 @@ KEYS.forEach(k => { CONFIG.keys[k.id] = localStorage.getItem('uom_key_' + k.id) 
   for (const id in LEGACY){
     if (CONFIG.keys[id]) continue;                 // 新键已有值，不动
     let v = '';
-    try { v = localStorage.getItem(LEGACY[id]) || ''; } catch(e){ v = ''; }
+    try { v = UomStore.get('tdt_key') || ''; } catch(e){ v = ''; }
     if (!v) continue;
     CONFIG.keys[id] = v;
-    try { localStorage.setItem('uom_key_' + id, v); } catch(e){}
+    try { UomStore.set('key_' + id, v); } catch(e){}
     report('KEY_MIGRATED', { id: id, from: LEGACY[id], len: v.length });
   }
 })();
 try {
-  CONFIG.custom = JSON.parse(localStorage.getItem('uom_custom_src') || '[]') || [];
+  CONFIG.custom = JSON.parse(UomStore.get('custom_src') || '[]') || [];
 } catch(e){ CONFIG.custom = []; }
 
 function saveKey(id, val){
   CONFIG.keys[id] = val;
-  localStorage.setItem('uom_key_' + id, val);
+  UomStore.set('key_' + id, val);
 }
 function saveCustom(){
-  localStorage.setItem('uom_custom_src', JSON.stringify(CONFIG.custom));
+  UomStore.set('custom_src', JSON.stringify(CONFIG.custom));
 }
 
 /* ---------------- 底图 ---------------- */
@@ -2771,20 +2969,20 @@ const FONT_SCALE = { auto:null, small:87.5, normal:100, large:115 };
 const mqDark = window.matchMedia('(prefers-color-scheme: dark)');
 
 function applyTheme(mode){
-  try { localStorage.setItem('uom_theme', mode); } catch(e){}
+  try { UomStore.set('theme', mode); } catch(e){}
   const dark = mode === 'dark' || (mode === 'auto' && mqDark.matches);
   document.documentElement.dataset.theme = dark ? 'dark' : 'light';
 }
 function applyFont(mode){
-  try { localStorage.setItem('uom_font', mode); } catch(e){}
+  try { UomStore.set('font', mode); } catch(e){}
   const pct = FONT_SCALE[mode];
   if (pct == null) document.documentElement.style.removeProperty('font-size');
   else document.documentElement.style.fontSize = pct + '%';
 }
 
 let savedTheme = 'auto', savedFont = 'auto';
-try { savedTheme = localStorage.getItem('uom_theme') || 'auto'; } catch(e){}
-try { savedFont = localStorage.getItem('uom_font') || 'auto'; } catch(e){}
+try { savedTheme = UomStore.get('theme') || 'auto'; } catch(e){}
+try { savedFont = UomStore.get('font') || 'auto'; } catch(e){}
 
 const themeUi = makeUiSelect(document.getElementById('themeUsel'), {
   options: THEME_OPTS, value: savedTheme, onChange: applyTheme
@@ -2802,13 +3000,13 @@ if (mqDark.addEventListener){
 /* ---------------- 底图失败提示可关闭（2.5）----------------
    没配 key 时提示会一直挂着挡地图，之前没有关闭入口。
    关闭后记进 localStorage，之后不再自动弹；面板里保留"恢复提示"。 */
-const WARN_HIDE_KEY = 'uom_hide_basewarn';
+const WARN_HIDE_KEY = 'hide_basewarn';
 function warnHidden(){
-  try { return localStorage.getItem(WARN_HIDE_KEY) === '1'; } catch(e){ return false; }
+  try { return UomStore.get(WARN_HIDE_KEY) === '1'; } catch(e){ return false; }
 }
 function setWarnHidden(v){
-  try { v ? localStorage.setItem(WARN_HIDE_KEY, '1')
-          : localStorage.removeItem(WARN_HIDE_KEY); } catch(e){}
+  try { v ? UomStore.set(WARN_HIDE_KEY, '1')
+          : UomStore.remove(WARN_HIDE_KEY); } catch(e){}
 }
 {
   const crsWarnBox = document.getElementById('amapWarn');
@@ -2912,8 +3110,10 @@ document.getElementById('diagCopy').onclick = async () => {
     btn.textContent = '已复制 ✓';
     setTimeout(() => { btn.textContent = '复制诊断信息'; }, 2000);
   } catch(e) {
-    /* 剪贴板不可用就显示出来让用户手动复制 */
-    out.style.display = 'block';
+    /* 剪贴板不可用就显示出来让用户手动复制。
+       注意显示的是包装层（里面才有"关闭输出"按钮），
+       直接显示 textarea 会让关闭按钮一起被藏起来。 */
+    document.getElementById('diagOutWrap').style.display = 'block';
     out.value = text;
     out.select();
     btn.textContent = '请手动复制下方文本';
@@ -3104,11 +3304,21 @@ function renderSearch(items, note){
               + escapeHtml(tail) + '</span>' : '') +
       '</div>';
   }).join('');
-  box.innerHTML = rows + (note ? '<div class="sempty">' + escapeHtml(note) + '</div>' : '');
+  /* 提示行（搜索失败/关键词太宽泛等）也要能关掉 ——
+     否则它会一直占着下拉区，用户想换个词重搜也看得到旧的失败信息。 */
+  box.innerHTML = rows + (note
+    ? '<div class="sempty"><button class="sempty-x" type="button" title="关闭"'
+      + ' aria-label="关闭提示">'
+      + '<svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor"'
+      + ' stroke-width="2.4" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>'
+      + '</button>' + escapeHtml(note) + '</div>'
+    : '');
   box.classList.add('on');
   for (const el of box.querySelectorAll('.sres')){
     el.onclick = () => gotoSearchItem(searchItems[+el.dataset.i]);
   }
+  const noteX = box.querySelector('.sempty-x');
+  if (noteX) noteX.onclick = (ev) => { ev.stopPropagation(); closeSearch(); };
 }
 
 function closeSearch(){
@@ -4173,13 +4383,13 @@ document.getElementById('measureOk').onclick = () => {
 /* ================================================================
    收藏与历史（3.2）
    ================================================================ */
-const FAV_KEY = 'uom_favs';
+const FAV_KEY = 'favs';
 function loadFavs(){
-  try { return JSON.parse(localStorage.getItem(FAV_KEY) || '[]') || []; }
+  try { return JSON.parse(UomStore.get(FAV_KEY) || '[]') || []; }
   catch(e){ return []; }
 }
 function saveFavs(list){
-  try { localStorage.setItem(FAV_KEY, JSON.stringify(list)); } catch(e){}
+  try { UomStore.set(FAV_KEY, JSON.stringify(list)); } catch(e){}
 }
 function addFav(name, lat, lon){
   const list = loadFavs();
@@ -4905,11 +5115,19 @@ document.getElementById('diagGeo').onclick = async () => {
 
 /* 拼一个"轻提示"式的诊断输出台 */
 function showDiag(text){
+  document.getElementById('diagOutWrap').style.display = 'block';
   const out = document.getElementById('diagOut');
-  out.style.display = 'block';
   out.value = text;
   out.scrollTop = 0;
 }
+
+/* 自检输出要能关掉：输出可能很长，占满设置面板，关掉才能继续操作其它设置。 */
+document.getElementById('diagHide').onclick = () => {
+  const wrap = document.getElementById('diagOutWrap');
+  wrap.style.display = 'none';
+  document.getElementById('diagOut').value = '';
+  toast('已收起诊断输出', { level:'ok' });
+};
 
 /* ---------------- 启动 ---------------- */
 document.getElementById('bdVer').textContent = BUILD;

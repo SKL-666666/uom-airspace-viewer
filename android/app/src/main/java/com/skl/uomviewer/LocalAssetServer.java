@@ -50,23 +50,49 @@ public class LocalAssetServer {
         this.assets = ctx.getAssets();
     }
 
-    /** 启动服务并返回端口。失败返回 -1。 */
+    /**
+     * 启动服务并返回端口。失败返回 -1。
+     *
+     * 端口分配策略：优先试固定端口，让页面 origin（http://127.0.0.1:PORT）
+     * 保持稳定 —— 因为 localStorage 是按 origin 隔离的，origin 变了数据就读不到。
+     * 不过【不能只靠固定端口】：端口可能被别的应用占用，那时代码必须还能工作。
+     * 用户数据的持久化最终由 StorageBridge（SharedPreferences）保证，
+     * 与 origin 无关；这里固定端口只是少一层变量。
+     */
+    private static final int PREFERRED_PORT = 18080;
+    private static final int PORT_TRIES = 20;   // 18080~18099
+
     public int start() {
-        try {
-            // 绑定 127.0.0.1 而不是 0.0.0.0：这个服务只给本应用自己的 WebView 用，
-            // 不能暴露到局域网。
-            server = new ServerSocket(0, 64, InetAddress.getByName("127.0.0.1"));
-            port = server.getLocalPort();
-            running = true;
-            Thread t = new Thread(this::acceptLoop, "asset-http");
-            t.setDaemon(true);
-            t.start();
-            Log.i(TAG, "本地服务已启动 http://127.0.0.1:" + port);
-            return port;
-        } catch (IOException e) {
-            Log.e(TAG, "启动失败: " + e.getMessage());
-            return -1;
+        // 绑定 127.0.0.1 而不是 0.0.0.0：这个服务只给本应用自己的 WebView 用，
+        // 不能暴露到局域网。
+        IOException last = null;
+        for (int p = PREFERRED_PORT; p < PREFERRED_PORT + PORT_TRIES; p++) {
+            try {
+                server = new ServerSocket(p, 64, InetAddress.getByName("127.0.0.1"));
+                port = p;
+                break;
+            } catch (IOException e) {
+                last = e;      // 端口被占，试下一个
+            }
         }
+        // 固定端口段全被占：退回系统分配，保证功能可用（数据仍由原生存储保持）
+        if (server == null) {
+            try {
+                server = new ServerSocket(0, 64, InetAddress.getByName("127.0.0.1"));
+                port = server.getLocalPort();
+                Log.w(TAG, "固定端口段被占用，回退随机端口 " + port
+                        + "（数据存储不受影响，由 SharedPreferences 保证）");
+            } catch (IOException e) {
+                Log.e(TAG, "启动失败: " + (last != null ? last.getMessage() : e.getMessage()));
+                return -1;
+            }
+        }
+        running = true;
+        Thread t = new Thread(this::acceptLoop, "asset-http");
+        t.setDaemon(true);
+        t.start();
+        Log.i(TAG, "本地服务已启动 http://127.0.0.1:" + port);
+        return port;
     }
 
     public int getPort() { return port; }
