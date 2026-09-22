@@ -51,29 +51,47 @@
   /* 深色主题：只改界面，底图与 #map/#loading 的背景保持浅色。
      原因：底图瓦片全是浅色的，把地图容器背景改深，瓦片没铺满的地方就会
      露出深色缝隙，拖动时看着像"栅栏"（之前踩过一次）。这条别再改。 */
+  /* 深色主题：中性纯黑，不带蓝味。
+     上一版用的是带蓝调的灰（#191b1f / #24272c / #31353c），在纯黑显示器上
+     会明显偏蓝，观感发"电子感"。这一版把色相全部归到中性灰阶：
+       --bg 用近黑（不是纯 #000，纯黑配白字对比过强、长时间看累，
+             而且地图容器周围会显得像"洞"）；
+       面板/输入框用 #0f0f0f ~ #2a2a2a 的中性灰阶；边框同理。
+     强调色保留青灰（--acc），它是这个项目的识别色，不跟着变黑。
+     语义色（成功/失败/警告）也去掉了原来的青绿/砖红底，改成中性深灰底 + 彩色文字，
+     否则背景会重新带上色相。 */
   :root[data-theme="dark"]{
     color-scheme: dark;
-    --bg:#191b1f;
-    --panel:rgba(32,35,40,.92);
-    --solid:#24272c;
-    --panel2:#2b2f35;
-    --panel3:#31353c;
-    --line:#3a3f47;
-    --line2:#2e3238;
-    --tx:#e9ecf0;
-    --tx2:#9aa2ad;
+    --bg:#0a0a0a;
+    --panel:rgba(18,18,18,.96);
+    --solid:#141414;
+    --panel2:#1c1c1c;
+    --panel3:#242424;
+    --line:#2e2e2e;
+    --line2:#222222;
+    --tx:#ececec;
+    --tx2:#9a9a9a;
     --acc:#5fb3a6;
     --acc-h:#7cc7bb;
-    --acc-bg:rgba(95,179,166,.14);
+    --acc-bg:rgba(95,179,166,.16);
     --ok:#6cc48c; --no:#e58074; --warn:#d8ab5c;
-    --ok-bg:#20332a; --no-bg:#3a2523; --warn-bg:#3a3324;
-    --ok-line:#2f4c3c; --no-line:#5a3733; --warn-line:#574c32;
+    --ok-bg:#161a17; --no-bg:#1c1615; --warn-bg:#1c1a15;
+    --ok-line:#2b3a30; --no-line:#3d2b28; --warn-line:#3d3527;
     --warn-tx:#e0bd7d;
-    --sheet:#24272c;
-    --sh-1:0 1px 2px rgba(0,0,0,.35);
-    --sh-2:0 1px 3px rgba(0,0,0,.45);
-    --sh-3:0 2px 8px rgba(0,0,0,.55);
+    --sheet:#141414;
+    --sh-1:0 1px 2px rgba(0,0,0,.6);
+    --sh-2:0 1px 3px rgba(0,0,0,.7);
+    --sh-3:0 2px 8px rgba(0,0,0,.8);
   }
+  /* 深色下 Leaflet 自带控件也要跟着变黑，否则是白底白字里的白块 */
+  :root[data-theme="dark"] .leaflet-control-zoom a{
+    background:#141414!important;color:#ececec!important;border-color:#2e2e2e!important}
+  :root[data-theme="dark"] .leaflet-control-zoom a:hover{background:#1c1c1c!important}
+  :root[data-theme="dark"] .leaflet-control-scale-line{
+    background:#141414!important;color:#9a9a9a!important;border-color:#3a3a3a!important}
+  :root[data-theme="dark"] .leaflet-popup-content-wrapper,
+  :root[data-theme="dark"] .leaflet-popup-tip{
+    background:#141414;color:#ececec;box-shadow:0 2px 8px rgba(0,0,0,.8)}
   *{box-sizing:border-box}
   body{font-size:.8125rem}
   /* 根字号必须是 100%：rem 全部以它为基准。
@@ -802,7 +820,7 @@
    alpha 严格为 0 或 255，无抗锯齿中间值，因此判定无歧义。
    瓦片缺失 ⇒ 该区域无适飞空域。 */
 /* 构建标识：用来确认浏览器实际加载的是哪一版，排查缓存问题 */
-const BUILD = 'v19.1';
+const BUILD = 'v19.2';
 
 /* 加载层兜底：放在脚本最前面注册。
    之前把它放在末尾，一旦中间某处抛错就永远不执行，页面会卡死在
@@ -3068,14 +3086,21 @@ function renderSearch(items, note){
   const rows = items.map((it, i) => {
     const kindLabel = it.kind === 'coord' ? '坐标'
       : it.kind === 'prov' ? '行政区' : '地点';
-    /* 在线结果带地址：同名 POI 很多（"首都机场"能搜出一堆），
-       只有名字根本分不清该点哪个。 */
-    const tail = it.addr ? it.addr : (it.dist ? (it.dist < 1000 ? Math.round(it.dist) + 'm'
-                                            : (it.dist / 1000).toFixed(1) + 'km') : '');
+    /* 结果行右侧显示什么，按信息价值排序：
+         1) 省 · 市 · 区  —— 同名 POI 很多（"首都机场"能搜出一堆），
+            行政区是区分它们最有效的依据；
+         2) 没有行政区时退回地址；
+         3) 都没有就显示距离（离线结果用不上这个）。
+       hover 时用 title 把完整地址补上，不占横向空间。 */
+    const region = joinRegion(it);
+    const tail = region || it.addr
+      || (it.dist ? (it.dist < 1000 ? Math.round(it.dist) + 'm'
+                                    : (it.dist / 1000).toFixed(1) + 'km') : '');
+    const tailTip = [region, it.addr].filter(Boolean).join('　');
     return '<div class="sres" data-i="' + i + '">' +
       '<span class="sr-k">' + escapeHtml(kindLabel) + '</span>' +
       '<span class="sr-n">' + escapeHtml(it.name) + '</span>' +
-      (tail ? '<span class="sr-d" title="' + escapeHtml(tail) + '">'
+      (tail ? '<span class="sr-d" title="' + escapeHtml(tailTip || tail) + '">'
               + escapeHtml(tail) + '</span>' : '') +
       '</div>';
   }).join('');
@@ -3496,7 +3521,12 @@ async function geoAmap(kw){
     if (!ll) continue;
     const w = gcj02ToWgs84(ll.lat, ll.lon);      // 高德是 GCJ-02 -> WGS84
     out.push({ kind:'geo', src:'高德', lat: w[0], lon: w[1],
-               addr: p.address ? String(p.address) : '', name: p.name || kw });
+               addr: p.address ? String(p.address) : '', name: p.name || kw,
+               /* 行政区三级：省(pname) / 市(cityname) / 区(adname)。
+                  直辖市会出现"省=市=上海市"，交给 joinRegion 去重。 */
+               pname: p.pname ? String(p.pname) : '',
+               city: p.cityname ? String(p.cityname) : '',
+               adname: p.adname ? String(p.adname) : '' });
   }
   return out;
 }
@@ -3607,6 +3637,20 @@ function gotoSearchItem(it){
   if (it.note) toast(it.note, { level:'warn' });
 }
 
+/* 组装行政区显示串：省 · 市 · 区。
+   两条去重规则（都有实际数据依据）：
+     · 直辖市会出现"省=市=上海市" —— 相邻重复要去掉；
+     · 有些条目 adname 与 cityname 相同（例如某些县级市）—— 同样去掉。
+   返回值为空时交给调用方用地址兜底。 */
+function joinRegion(it){
+  const parts = [it.pname, it.city, it.adname]
+    .map(v => (v == null ? '' : String(v).trim()))
+    .filter(Boolean);
+  const out = [];
+  for (const v of parts) if (out[out.length - 1] !== v) out.push(v);
+  return out.join(' · ');
+}
+
 /* 平滑飞到某点。三处导航（搜索结果、定位、收藏）共用，避免各写一份参数。
    为什么用 flyTo 而不是 setView({animate:true})：
      setView+animate 只是把中心点在屏幕上线性挪过去、缩放同时线性改，
@@ -3624,7 +3668,37 @@ function flyToPoint(lat, lon, zoom, opts){
     if (dz >= 8) speed = 1.9;              // 跨级别大时提速，否则飞太久
     else if (dz >= 5) speed = 1.5;
   } catch(e){}
-  const done = () => { if (opts.then) opts.then(); };
+  /* 后续动作（例如飞到位再弹查询结果）必须在【一定会被调用一次】的前提下执行。
+     只挂 map.once('moveend') 是不够的 —— 实测过：起点与终点相同、
+     或动画被跳过时，Leaflet 不派发 moveend，于是回调永远不执行，
+     表现为"点了搜索结果，地图不动、也不出结论"。所以：
+       · 用 doneOnce 保证只执行一次；
+       · 挂 moveend 接管正常情况；
+       · 再加一个兜底定时器，无论动画是否发生都保证回调会被调用。
+     兜底时长取动画时长的上限（duration 是秒，Leaflet 内部还会按缩放差折算），
+     这里给足余量，宁可稍晚一点也不要不执行。 */
+  let fired = false;
+  const doneOnce = () => {
+    if (fired) return;
+    fired = true;
+    if (opts.then) opts.then();
+  };
+  const fallbackMs = Math.max(700, (opts.duration || 0.9) * 1000 + 900);
+  const fallback = setTimeout(doneOnce, fallbackMs);
+
+  map.once('moveend', () => { clearTimeout(fallback); doneOnce(); });
+
+  /* 已经在目标点且缩放相同 -> flyTo 不会产生任何位移，直接执行回调，
+     不必等 moveend（它根本不会来）。 */
+  let same = false;
+  try {
+    const c = map.getCenter();
+    same = Math.abs(c.lat - target[0]) < 1e-7 &&
+           Math.abs(c.lng - target[1]) < 1e-7 &&
+           Math.abs(map.getZoom() - z) < 1e-7;
+  } catch(e){}
+  if (same){ clearTimeout(fallback); doneOnce(); return; }
+
   try {
     map.flyTo(target, z, {
       animate: true,
@@ -3636,13 +3710,10 @@ function flyToPoint(lat, lon, zoom, opts){
   } catch(e){
     /* flyTo 在某些情况下会抛错（例如地图刚初始化、容器尺寸为 0），
        退回 setView，保证"能到"永远优先于"飞得好看"。 */
+    clearTimeout(fallback);
     map.setView(target, z, { animate: true });
-    done();
-    return;
+    doneOnce();
   }
-  /* 用 moveend 触发后续动作（例如飞到位再弹查询结果），
-     否则会边飞边查，结果卡片先跳出来、地图还在动，观感很乱。 */
-  map.once('moveend', done);
 }
 
 /* 在线检索结果缓存：同一个词不重复打接口（这两个服务都有 QPS 限制，

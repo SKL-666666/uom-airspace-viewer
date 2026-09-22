@@ -365,6 +365,36 @@ BODY_INJECT = """<script>
       CONFIG.keys.tdt = '';
     });
 
+    // ---- 11y. 深色主题必须是中性黑，不能带蓝调 ----
+    await step('dark_neutral', async function(){
+      themeUi.set('dark', true);
+      await sleep(300);
+      function rgb(v){
+        var m = String(v).trim().match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+        return m ? [+m[1], +m[2], +m[3]] : null;
+      }
+      var names = ['--bg','--solid','--panel2','--panel3','--line','--sheet','--tx'];
+      var worst = 0, worstName = '';
+      for (var i = 0; i < names.length; i++){
+        var raw = getComputedStyle(document.documentElement)
+                    .getPropertyValue(names[i]);
+        var c = rgb(raw);
+        if (!c) { log('dn_' + names[i], raw); continue; }
+        // 判据：最亮通道与最暗通道之差 <= 2 才算中性（无可见色相）
+        var spread = Math.max(c[0],c[1],c[2]) - Math.min(c[0],c[1],c[2]);
+        if (spread > worst){ worst = spread; worstName = names[i]; }
+        log('dn_' + names[i], c.join(',') + ' 色差=' + spread);
+      }
+      log('dn_worst_spread', worst + ' (' + worstName + ')');
+      log('dn_is_neutral', worst <= 2);
+      // 面板实际渲染出来的底色
+      var pBg = rgb(getComputedStyle(q('#side')).backgroundColor);
+      log('dn_side_bg', pBg ? pBg.join(',') : 'N/A');
+      log('dn_side_neutral', pBg ? (Math.max.apply(null,pBg) - Math.min.apply(null,pBg)) <= 2 : 'N/A');
+      themeUi.set('auto', true);
+      await sleep(200);
+    });
+
     // ---- 11z. 导航：平滑飞行 + 落地后再查询 ----
     await step('flyto', async function(){
       map.setView([35.5, 105.0], 5, { animate: false });   // 回到全国概览
@@ -448,19 +478,36 @@ BODY_INJECT = """<script>
         var n = document.querySelectorAll('#searchResults .sres').length;
         var note = q('#searchResults .sempty') ? q('#searchResults .sempty').textContent.slice(0,70) : '';
         var first = q('#searchResults .sres .sr-n');
+        var reg = q('#searchResults .sres .sr-d');
         log('ra_' + i, kw + ' -> ' + n + ' 行' +
-            (first ? '／首条:' + first.textContent : '') + (note ? '／' + note : ''));
-        // 点第一条，验证能定位并出结论
-        if (i === 0 && n > 0){
-          q('#searchResults .sres').click();
-          await waitFor(function(){
-            var b = q('#resVerdict .big');
-            return b && b.textContent && b.textContent !== '查询中…';
-          }, 30000);
-          log('ra_pick_result', q('#resVerdict .big') ? q('#resVerdict .big').textContent : 'NONE');
-          log('ra_pick_coord', q('#resCoord') ? q('#resCoord').textContent : 'NONE');
+            (first ? '／首条:' + first.textContent : '') +
+            (reg ? '／地区:' + reg.textContent : '／(无地区)') + (note ? '／' + note : ''));
+        // 直辖市去重：不该出现"上海市 · 上海市"
+        if (reg && /^(.+?) · $/.test(reg.textContent)){
+          log('ra_dup_' + i, '出现重复行政区：' + reg.textContent);
         }
       }
+      /* 点选验证必须放在所有搜索跑完之后单独做 ——
+         放进循环里会被后续搜索覆盖状态，读到的就不是本次结果了
+         （我就这么误判过一次，还去改了本来没问题的代码）。 */
+      searchInput.value = '首都机场';
+      searchInput.dispatchEvent(new Event('input', { bubbles: true }));
+      await waitFor(function(){
+        return document.querySelectorAll('#searchResults .sres').length > 0;
+      }, 20000);
+      var want = searchItems.length ? searchItems[0] : null;
+      log('ra_want', want ? want.name + ' @ ' + want.lat.toFixed(6) + ',' + want.lon.toFixed(6) : 'NONE');
+      document.getElementById('resCoord').textContent = '（尚未查询）';
+      q('#searchResults .sres').click();
+      await waitFor(function(){
+        var t = q('#resCoord') ? q('#resCoord').textContent : '';
+        return t && t !== '（尚未查询）';
+      }, 30000);
+      var got = q('#resCoord') ? q('#resCoord').textContent : 'NONE';
+      log('ra_got', got);
+      log('ra_matches', (want && got.indexOf(want.lat.toFixed(6)) === 0) ? true : false);
+      log('ra_verdict', q('#resVerdict .big') ? q('#resVerdict .big').textContent : 'NONE');
+      log('ra_card_visible', q('#result').classList.contains('on'));
       CONFIG.keys.amap = '';
       geoCache.clear();
       searchInput.value = '';
