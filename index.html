@@ -802,7 +802,7 @@
    alpha 严格为 0 或 255，无抗锯齿中间值，因此判定无歧义。
    瓦片缺失 ⇒ 该区域无适飞空域。 */
 /* 构建标识：用来确认浏览器实际加载的是哪一版，排查缓存问题 */
-const BUILD = 'v19.0';
+const BUILD = 'v19.1';
 
 /* 加载层兜底：放在脚本最前面注册。
    之前把它放在末尾，一旦中间某处抛错就永远不执行，页面会卡死在
@@ -3601,10 +3601,48 @@ function gotoSearchItem(it){
   closeSearch();
   searchInput.blur();
   const z = it.zoom || (it.kind === 'geo' ? 15 : 13);
-  map.setView(wgsToMap(it.lat, it.lon), z, { animate: true });
-  /* 搜索结果是 WGS84（天地图为 CGCS2000≈WGS84），直接查询 */
-  queryAt(it.lat, it.lon);
+  /* 先飞过去，落地后再出查询结果 —— 边飞边查的话结果卡片会先跳出来、
+     地图还在动，观感很乱。 */
+  flyToPoint(it.lat, it.lon, z, { then: () => queryAt(it.lat, it.lon) });
   if (it.note) toast(it.note, { level:'warn' });
+}
+
+/* 平滑飞到某点。三处导航（搜索结果、定位、收藏）共用，避免各写一份参数。
+   为什么用 flyTo 而不是 setView({animate:true})：
+     setView+animate 只是把中心点在屏幕上线性挪过去、缩放同时线性改，
+     跨省时看着像"瞬移"；flyTo 会走一条弧线（缩放级别先拉远再拉近）并带缓动，
+     观感才是"飞过去"。
+   跨级别太大时（例如从全国概览直接飞到街道级）弧线会拉得很长，
+   这时用 speed 限制一下，别让用户等太久。 */
+function flyToPoint(lat, lon, zoom, opts){
+  const target = wgsToMap(lat, lon);       // 底图是 GCJ-02/BD-09 时要换算
+  const z = zoom || 13;
+  opts = opts || {};
+  let speed = 1.2;
+  try {
+    const dz = Math.abs(map.getZoom() - z);
+    if (dz >= 8) speed = 1.9;              // 跨级别大时提速，否则飞太久
+    else if (dz >= 5) speed = 1.5;
+  } catch(e){}
+  const done = () => { if (opts.then) opts.then(); };
+  try {
+    map.flyTo(target, z, {
+      animate: true,
+      duration: opts.duration || 0.9,       // 秒；Leaflet 内部按缩放差再折算
+      easeLinearity: 0.28,
+      speed: speed,
+      noMoveStart: false
+    });
+  } catch(e){
+    /* flyTo 在某些情况下会抛错（例如地图刚初始化、容器尺寸为 0），
+       退回 setView，保证"能到"永远优先于"飞得好看"。 */
+    map.setView(target, z, { animate: true });
+    done();
+    return;
+  }
+  /* 用 moveend 触发后续动作（例如飞到位再弹查询结果），
+     否则会边飞边查，结果卡片先跳出来、地图还在动，观感很乱。 */
+  map.once('moveend', done);
 }
 
 /* 在线检索结果缓存：同一个词不重复打接口（这两个服务都有 QPS 限制，
@@ -3850,8 +3888,7 @@ function locateMe(){
     navigator.geolocation.getCurrentPosition(
       p => {
         const la = p.coords.latitude, lo = p.coords.longitude;
-        map.setView(wgsToMap(la, lo), 13, { animate: true });
-        queryAt(la, lo);
+        flyToPoint(la, lo, 14, { then: () => queryAt(la, lo) });
         toast('已定位到当前位置', { level:'ok',
           detail: '精度约 ' + Math.round(p.coords.accuracy || 0) + ' 米' });
       },
@@ -4108,8 +4145,7 @@ function renderFavs(){
         return;
       }
       const f = loadFavs()[i];
-      map.setView(wgsToMap(f.lat, f.lon), 14, { animate: true });
-      queryAt(f.lat, f.lon);
+      flyToPoint(f.lat, f.lon, 15, { then: () => queryAt(f.lat, f.lon) });
       if (isMobile()) closePanels();
     };
     const nm = row.querySelector('.fr-n');

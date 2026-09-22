@@ -365,6 +365,66 @@ BODY_INJECT = """<script>
       CONFIG.keys.tdt = '';
     });
 
+    // ---- 11z. 导航：平滑飞行 + 落地后再查询 ----
+    await step('flyto', async function(){
+      map.setView([35.5, 105.0], 5, { animate: false });   // 回到全国概览
+      await sleep(400);
+      var z0 = map.getZoom();
+      var c0 = map.getCenter();
+      // 飞到一个远处的点（跨省，最容易看出"是瞬移还是飞过去"）
+      /* 飞行过程中连续采样。单点采样不可靠 —— 120ms 有时已经越过平移阶段，
+         于是"中途进度"看起来像 1.0，误判成不是渐动（我据此白改过一次）。
+         改为高频采样，只要出现过明显的中间态就说明是渐动。 */
+      var samples = [];
+      var t0 = performance.now();
+      flyToPoint(40.0725, 116.5975, 14);
+      for (var si = 0; si < 60; si++){
+        samples.push({ z: map.getZoom(), lat: map.getCenter().lat });
+        await sleep(25);
+      }
+      var mid = samples.length > 2 ? samples[2].z : map.getZoom();
+      var midC = { lat: samples.length > 2 ? samples[2].lat : map.getCenter().lat };
+      var sawMid = samples.some(function(sp){
+        return sp.z > z0 + 0.4 && sp.z < 14 - 0.4;
+      });
+      var distinct = samples.filter(function(sp, i){
+        return i === 0 || Math.abs(sp.lat - samples[i-1].lat) > 0.05;
+      }).length;
+      log('fly_saw_intermediate_zoom', sawMid);
+      log('fly_distinct_steps', distinct);
+      await waitFor(function(){ return map.getZoom() >= 13.5; }, 15000);
+      var dur = Math.round(performance.now() - t0);
+      log('fly_from_zoom', z0);
+      log('fly_mid_zoom', mid);
+      log('fly_end_zoom', map.getZoom());
+      log('fly_moved_center', Math.abs(map.getCenter().lat - c0.lat) > 1);
+      // 中途应该既没到起点也没到终点（说明是逐渐移动，不是瞬移）
+      log('fly_lat_progress_steps', samples.filter(function(sp, i){
+        return i > 0 && Math.abs(sp.lat - samples[i-1].lat) > 0.01;
+      }).length + ' 次采样位置在变化');
+      /* flyTo 的弧线特征就是"先快速平移、缩放随后跟上"，
+         所以中途出现"位移进度远大于缩放进度"是【正确】的，
+         不能要求两者同步（我一开始就是这么写错的）。 */
+      var zp = (mid - z0) / (14 - z0);
+      var lp = Math.abs(midC.lat - c0.lat) / Math.abs(40.0725 - c0.lat);
+      log('zoom_progress', zp.toFixed(2) + ' (0=起点 1=终点)');
+      log('lat_progress', lp.toFixed(2) + ' (0=起点 1=终点)');
+      log('fly_zp_ok', zp > 0.02 && zp < 0.98);
+      log('fly_lp_ok', lp > 0.02 && lp < 0.98);
+      /* 渐动的判据用"采样中出现过中间缩放级别 + 位移是多步发生的"，
+         不用单点的进度值。 */
+      log('fly_is_gradual', sawMid && distinct >= 5);
+      log('fly_duration_ms', dur);
+      log('fly_dur_reasonable', dur > 500 && dur < 6000);
+
+      // 关键边界：已经在目标点、缩放也相同 -> 不会有 moveend，
+      // 此时 then 回调必须仍然被调用，否则"点了没反应"
+      var called = false;
+      flyToPoint(40.0725, 116.5975, 14, { then: function(){ called = true; } });
+      await sleep(1200);
+      log('fly_then_called_when_already_there', called);
+    });
+
     // ---- 12a0. 用【真实高德 key】打真实接口，端到端验证 ----
     // 之前所有搜索用例用的都是替身，而替身会掩盖真实字段差异。
     // 这一步打真接口（key 由 make_probe 从环境变量注入，不写进文件）。
