@@ -10,8 +10,8 @@ android {
         applicationId "com.skl.uomviewer"
         minSdk 24
         targetSdk 34
-        versionCode 2
-        versionName "1.0.1"
+        versionCode 3
+        versionName "2.0.0"
     }
 
     buildTypes {
@@ -20,6 +20,22 @@ android {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
+    }
+
+    /* 关键：内置的数据文件不能被压缩。
+       assets 里的文件默认会被 aapt 压缩，而 AssetManager.openFd() 只对
+       【未压缩】的条目有效 —— 一旦被压缩，openFd 抛异常，
+       LocalAssetServer 只能退化成"把整个文件读一遍来数长度"，
+       85MB 的数据每处理一个 Range 请求都要读一遍，直接不可用。
+       另外 PMTiles 本身已压缩，再压也没有收益。 */
+    aaptOptions {
+        noCompress 'pmtiles'
+        noCompress 'geojson'
+    }
+
+    /* 内置 85MB 数据后，dex/资源打包会比以前慢很多，给足内存 */
+    dexOptions {
+        javaMaxHeapSize "2g"
     }
 
     compileOptions {

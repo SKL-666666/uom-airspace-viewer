@@ -59,9 +59,24 @@ jobs:
         working-directory: android
         run: gradle :app:dependencies --configuration releaseRuntimeClasspath --no-daemon | tail -80
 
+      # 把网页资源与 85MB 数据拷进 assets/。
+      # 这些文件不入版本库（体积大，且与网页端同源，存两份必然不同步），
+      # 所以每次构建都现拷。本地构建也是同一个脚本，保证产出一致。
+      - name: 同步内置资源到 assets
+        run: |
+          python3 sync_assets.py
+          echo '--- assets 清单 ---'
+          du -h android/app/src/main/assets/data/* | sort -k2
+
       - name: 构建 release APK
         working-directory: android
         run: gradle assembleRelease --no-daemon --stacktrace
+
+      # 关键校验：确认数据真的进了 APK。
+      # 历史上出现过"编译通过、产物却缺数据"（资源没同步就直接构建），
+      # 那种包装上去表现为地图全白，很难从现象倒推到原因。
+      - name: 校验 APK 内含内置数据
+        run: python3 verify_apk_data.py android/app/build/outputs/apk/release
 
       - name: 签名
         if: success()

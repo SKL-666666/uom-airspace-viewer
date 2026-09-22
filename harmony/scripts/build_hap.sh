@@ -20,7 +20,17 @@ export DEVECO_SDK_HOME="$DEVECO/sdk"
 # Git Bash 下 PATH 必须用 POSIX 写法，用 Windows 反斜杠路径 java 不生效
 export PATH="$(cygpath -u "$DEVECO/jbr/bin" 2>/dev/null || echo "$DEVECO/jbr/bin"):$PATH"
 
-cd "$(dirname "$0")/.."
+# 仓库根目录。
+# 路径坑：脚本以相对路径被调用时，$0 只到 harmony/scripts/build_hap.sh，
+# 之前用 "$(dirname "$0")/../.." 拼出来落到了 harmony/ 下面（少了一层）。
+# 先用 cd + pwd 求出绝对路径，后面一律基于它。
+REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+
+# 先把网页资源与 85MB 数据同步进 rawfile（这些文件不入版本库）
+echo "同步内置资源…"
+python "$REPO_ROOT/sync_rawfile.py"
+
+cd "$REPO_ROOT/harmony"
 "$NODE" "$HVIGOR" assembleHap \
   --mode module -p product=default -p buildMode=release --no-daemon
 

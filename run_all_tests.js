@@ -32,6 +32,9 @@ const SUITE = [
   ['端到端测量  batch_e2e',      'node', ['test_batch_e2e.js'],       true,  true],
   ['HTTP Range  http_range',     'python', ['test_http_range.py'],    true],
   ['判定参考    verify_logic',   'python', ['verify_logic.py'],       false],
+  /* 内置数据方案专用的两项：Range 解析逻辑（与 Android/Harmony 两端
+     实现保持同一套用例）、APK 内数据完整性（构建后校验）。 */
+  ['Range 逻辑  range_server',   'python', ['test_range_server.py'],  false],
   /* 真实浏览器里的 UI 自检（需要本机 Chrome + 本地服务）。
      这一步是唯一能发现"标记/事件接线错了"的检查 —— 静态分析只能证明
      名字对得上，证明不了点下去有反应。放在最后，因为它最慢。 */

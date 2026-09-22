@@ -47,19 +47,45 @@ UOM 栅格、大疆、ZB(SR)801 都是 **WGS84/CGCS2000**；高德、腾讯底�
 
 ---
 
-## 三种使用方式
+## 使用方式
 
-| 方式 | 适用 | 需要什么 |
-|------|------|---------|
-| **在线版** | 随手查 | 只要能上网 |
-| **Windows exe** | 常用、要离线 | 双击即可，无需 Python |
-| **本地服务** | 要完整诊断能力 | Python 3.x |
+| 方式 | 数据来源 | 适用 |
+|------|---------|------|
+| **Android APK** | **全部内置（85MB，完全离线）** | 手机/平板随身用 |
+| **HarmonyOS HAP** | **全部内置（85MB，完全离线）** | 鸿蒙手机/平板 |
+| **在线版** | 远程读取，需要网络 | 桌面浏览器随手查 |
+| **本地服务** | 本地文件，含完整诊断 | 需要排查取数问题 |
 
-### 在线版
+> **移动端不依赖任何线上站点。** 早期版本把 APK/HAP 做成加载 GitHub Pages 的
+> 外壳，实测在中国大陆**首次建连要 10~15 秒**（DNS 只要 0.02s，卡在 TCP 握手），
+> 而无人机场景常在野外没有稳定网络 —— 所以改成数据内置，彻底断掉这条依赖。
+
+### Android / HarmonyOS：数据内置怎么实现的
+
+安装包里直接带走全部数据，页面通过**应用内启动的本地 HTTP 服务**访问：
+
+```
+App 启动
+  → 在 127.0.0.1 起一个只读资源的本地服务（支持 HTTP Range）
+  → WebView / ArkWeb 加载 http://127.0.0.1:<port>/index.html
+  → 页面按相对路径取 data/uom-shifei.pmtiles，走 Range 分块读取
+```
+
+**为什么必须自己起服务，不能直接用 `assets://` 或 `rawfile://`：**
+
+PMTiles 的读取方式是"先取头部 127 字节，再按目录跳着取指定字节区间"，
+**全程依赖 HTTP Range（206）**。而 `assets://`、`rawfile://` 这类协议
+**只能整体读取**，拿不到 206 —— 直接加载的话，PMTiles 第一步就失败，
+表现为**地图一片空白**（而不是报错），很难从现象倒推原因。
+
+这与本地开发时用 `python serve.py` 是同一个道理，所以 `index.html`
+**不需要为移动端做任何特化** —— 数据路径本来就是相对路径。
+
+### 在线版（桌面浏览器）
 
 <https://skl-666666.github.io/uom-airspace-viewer/>
 
-之所以能纯静态部署，是因为 **GitHub Pages 支持 HTTP Range 请求** ——
+纯静态部署可行的原因是 **GitHub Pages 支持 HTTP Range**，
 而 PMTiles 正是靠 Range 按需读取字节。已实测确认：
 
 ```
@@ -68,12 +94,8 @@ Accept-Ranges: bytes
 Content-Range: bytes 0-126/89540467
 ```
 
-### Windows exe
-
-到 [Releases](../../releases) 下载 `UOM-Viewer-Windows-x64.exe`，双击运行。
-
-单文件 45MB，已内置全部数据与本地服务，**不需要安装 Python**。
-首次启动会解压到临时目录，约 1~3 秒。
+> 但国内访问 Pages 的**首次建连偏慢**（实测 10~15 秒）。
+> 如果嫌慢，用本地服务或移动端内置版。
 
 ### 本地服务
 
@@ -239,6 +261,33 @@ PMTiles 的数据是 clustered 存放的（tile_id 顺序 == 文件偏移顺序�
 
 ---
 
+## 验证程度（重要，如实说明）
+
+| 项 | 状态 |
+|---|---|
+| 网页端全部功能 | ✅ 已在真实浏览器（无头 Chrome + CDP）逐项验证 |
+| 内置资源的 Range 服务链路 | ✅ 已验证（把 assets 目录当站点根跑通 206 / 416 / 数据完整性） |
+| Range 解析逻辑 | ✅ 有等价的逻辑测试（22 项，覆盖三种 Range 形式与越界） |
+| HAP 构建 | ✅ 本地可构建（88.4 MB，未签名），ArkTS 通过编译器校验 |
+| APK 构建 | ⚠️ 只能由 CI 构建（本机无 Android SDK） |
+| **APK / HAP 真机运行** | ❌ **未验证** |
+| **HAP 安装（需签名）** | ❌ 未验证，签名需你自己的华为开发者账号 |
+
+**必须说清楚的一条：移动端我只做到"能构建、资源打包正确、逻辑有测试覆盖"，
+没有在真机上跑过。** 具体没验证的是：
+
+- 本地 HTTP 服务在真实设备上能否正常起停（端口占用、后台回收）
+- ArkWeb / WebView 加载 `http://127.0.0.1:port/` 是否有额外限制
+- 85MB 数据在低端设备上的内存与加载表现
+- 定位、剪贴板、文件导入在选择器里是否正常
+
+**如果你装了之后发现打不开或地图空白，请把现象告诉我** ——
+两端都写了日志（Android 用 `LocalAssetServer`/`MainActivity` 标签，
+HarmonyOS 用 `UOMViewer` 域），可以用 `adb logcat` / DevEco 的日志窗口看到
+服务是否启动成功、端口是多少、请求返回了什么状态码。
+
+---
+
 ## 项目结构
 
 ```
@@ -267,6 +316,12 @@ UOM/
 ├── check_order.js             声明顺序检查
 ├── make_probe.py              生成带自检探针的页面副本（供浏览器自检）
 ├── cdp_ui_test.js             用无头 Chrome 在真实时间里跑页面自检
+│
+├── make_icons.py              生成应用图标（单色几何符号，各平台尺寸）
+├── sync_assets.py             同步网页资源与数据到 Android assets
+├── sync_rawfile.py            同步网页资源与数据到 HarmonyOS rawfile
+├── verify_apk_data.py         校验 APK 内确实含数据且未被压缩
+├── test_range_server.py       Range 解析逻辑测试（与两端实现同一套用例）
 └── 性能分析.md                 性能实测与分析
 ```
 
@@ -274,74 +329,17 @@ UOM/
 
 ## 打包与分发
 
-三平台产物都在 [Releases](../../releases)。
+移动端与在线版的产物/入口如下。
 
-| 平台 | 产物 | 大小 | 构建方式 |
-|------|------|------|---------|
-| Windows | `UOM-Viewer-Windows-x64.exe` | 45 MB | `python -m PyInstaller build_exe.spec` |
-| Android | `UOM-Viewer-Android.apk` | 2.4 MB | 推 tag 触发 CI（本机无 Android SDK） |
-| HarmonyOS | `UOM-Viewer-HarmonyOS-unsigned.hap` | 104 KB | `bash harmony/scripts/build_hap.sh` |
+| 平台 | 产物 | 大小 | 数据 | 构建方式 |
+|------|------|------|------|---------|
+| **Android** | `UOM-Viewer-Android.apk` | 约 90 MB | **全部内置** | 推 tag 触发 CI（本机无 Android SDK） |
+| **HarmonyOS** | `UOM-Viewer-HarmonyOS-unsigned.hap` | 约 89 MB | **全部内置** | `bash harmony/scripts/build_hap.sh` |
+| 在线版 | GitHub Pages | - | 远程读取 | 推 main 自动部署 |
 
-### Android
+体积主要是数据：UOM 适飞空域栅格 85 MB 无法再压（本身就是压缩过的瓦片）。
 
-本机没有 Android SDK，因此走 GitHub Actions 云端构建：推一个 `v*` tag 即
-自动构建、签名并附加到同名 Release。
+**签名情况：**
+- APK 用 CI 生成的一次性密钥签名 —— 可安装，但不适合上架，换密钥需要卸载重装
+- HAP **未签名** —— 安装需用你自己的华为开发者账号签名，我无法代签
 
-```bash
-git tag v1.0.2 && git push origin v1.0.2
-```
-
-> 构建踩过的坑：`androidx.webkit` 会传递依赖老版 `kotlin-stdlib-jdk8`，
-> 与新版 `kotlin-stdlib` 产生重复类
-> （`kotlin.collections.jdk8.CollectionsJDK8Kt`）导致
-> `checkReleaseDuplicateClasses` 失败。该项目其实用不到 `androidx.webkit`
-> （WebView API 全在 `android.webkit` 里），已移除，并加了
-> `resolutionStrategy.force` 统一 Kotlin 标准库版本作为兜底。
-
-签名用的是一次性密钥（`keytool` 现场生成），只为让 APK 可安装，
-不适合上架。
-
-### Windows
-
-```bash
-pip install pywebview pythonnet pyinstaller
-python -m PyInstaller build_exe.spec --noconfirm
-```
-
-> 打包体积对排除列表很敏感。本机 site-packages 里装了 torch / sklearn 等
-> 大库，不排除的话单文件会到 286MB；`build_exe.spec` 里已排除，产物约 45MB。
-
-### HarmonyOS
-
-需要 DevEco Studio 自带工具链（node / hvigor / jbr / SDK）：
-
-```bash
-bash harmony/scripts/build_hap.sh
-```
-
-> `hvigor` 在打包阶段会 `spawn java`，必须让 `JAVA_HOME` 和 `PATH` 都指向
-> DevEco 自带的 `jbr`，否则报 `spawn java ENOENT`。
-
-产物是**未签名** HAP。要装到真机需在 DevEco 里配置签名（生成证书 +
-Profile），或在 AppGallery Connect 申请调试证书。
-
-### Android
-
-本机没有 Android SDK，因此走 CI：推一个 tag 即触发云端构建，
-产物上传为 artifact。
-
-```bash
-git tag v1.0.0 && git push origin v1.0.0
-```
-
----
-
-## 免责声明
-
-本项目是**个人非官方工具**，与民航局、大疆创新均无关联。
-
-数据来自第三方归档且非实时，**不作为飞行依据**。
-实际飞行前请以 [UOM 官方平台](https://uom.caac.gov.cn) 及当地空管部门
-发布的最新信息为准。
-
-数据版权归原权利方所有，详见 [NOTICE.md](NOTICE.md)。

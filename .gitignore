@@ -62,3 +62,10 @@ android/build/
 android/app/build/
 android/local.properties
 android/gradle/wrapper/gradle-wrapper.jar
+
+# 构建时从仓库根同步进去的资源（体积大，且与网页端同源，不入库）
+android/app/src/main/assets/
+harmony/entry/src/main/resources/rawfile/web/
+
+# 图标预览产物（由 make_icons.py 生成；各平台实际使用的图标已入库）
+_icons/

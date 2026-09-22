@@ -395,6 +395,51 @@ BODY_INJECT = """<script>
       await sleep(200);
     });
 
+    // 查某个经纬度在 z13 的瓦片在缓存里是否有数据（用于判断"该处到底有没有"）
+    function tileStoreStatsAt(z, lat, lon){
+      try {
+        var zz = 13;
+        var n = Math.pow(2, zz);
+        var x = Math.floor((lon + 180) / 360 * n);
+        var r = lat * Math.PI / 180;
+        var y = Math.floor((1 - Math.log(Math.tan(r) + 1/Math.cos(r)) / Math.PI) / 2 * n);
+        var e = tileStore.get(zz + '/' + x + '/' + y);
+        if (e === undefined) return null;
+        if (e === null) return 'null(无数据)';
+        return '有数据 ' + (e.data ? e.data.byteLength + 'B' : '?');
+      } catch(err){ return 'ERR ' + err.message; }
+    }
+
+    // ---- 11x. 复现"概览有→放大没了→再放大又有" ----
+    // 用户报的现象。用后端读器找到的具体坐标：z11 有数据、其 z12 子块为空。
+    await step('zoom_gap', async function(){
+      var LAT = 40.246, LON = 108.545;   // 由 Python 读器查得的最小复现点
+      var report = [];
+      function countPainted(){
+        // 统计当前真正画上去的 UOM 瓦片（有 src 且 complete 的 img）
+        var imgs = document.querySelectorAll('.leaflet-pane img.leaflet-tile');
+        var shown = 0, blank = 0;
+        for (var i = 0; i < imgs.length; i++){
+          var im = imgs[i];
+          if (im.complete && im.naturalWidth > 0) shown++;
+          else blank++;
+        }
+        return shown + '/' + (shown + blank);
+      }
+      for (var zi = 0; zi < 5; zi++){
+        var z = [9, 11, 12, 13, 15][zi];
+        map.setView(wgsToMap(LAT, LON), z, { animate: false });
+        await sleep(2500);
+        var st = tileStoreStatsAt(z, LAT, LON);
+        report.push('z' + z + ' 瓦片:' + countPainted() +
+                    ' 缓存:' + tileStore.size +
+                    ' 当前z13瓦片=' + (st ? st : '无'));
+        log('zg_z' + z, countPainted() + ' 可见瓦片, tileStore=' + tileStore.size +
+            ', ' + (st ? ('z13实际坐标有数据=' + st) : 'z13无数据'));
+      }
+      log('zg_report', report.join(' | '));
+    });
+
     // ---- 11z. 导航：平滑飞行 + 落地后再查询 ----
     await step('flyto', async function(){
       map.setView([35.5, 105.0], 5, { animate: false });   // 回到全国概览
