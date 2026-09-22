@@ -39,6 +39,29 @@
       },
       {
         "name": "ohos.permission.GET_NETWORK_INFO"
+      },
+      // 定位权限。
+      // 页面用 navigator.geolocation 实现"定位我的位置"，ArkWeb 里的 H5 定位
+      // 依赖宿主 App 的权限。两个必须成对声明：
+      //   · LOCATION               精确位置
+      //   · APPROXIMATELY_LOCATION 粗略位置
+      // 只声明 LOCATION 会被系统拒绝（从 API 9 起要求成对申请）。
+      // reason 是必填项，用于向用户说明申请理由；userGrant 表示需要用户授权。
+      {
+        "name": "ohos.permission.LOCATION",
+        "reason": "$string:location_reason",
+        "usedScene": {
+          "abilities": ["EntryAbility"],
+          "when": "inuse"
+        }
+      },
+      {
+        "name": "ohos.permission.APPROXIMATELY_LOCATION",
+        "reason": "$string:location_reason",
+        "usedScene": {
+          "abilities": ["EntryAbility"],
+          "when": "inuse"
+        }
       }
     ]
   }

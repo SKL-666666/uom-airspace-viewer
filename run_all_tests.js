@@ -35,6 +35,9 @@ const SUITE = [
   /* 内置数据方案专用的两项：Range 解析逻辑（与 Android/Harmony 两端
      实现保持同一套用例）、APK 内数据完整性（构建后校验）。 */
   ['Range 逻辑  range_server',   'python', ['test_range_server.py'],  false],
+  /* 移动端定位配置：权限声明 + 运行时申请 + WebView 回调三处缺一不可，
+     缺任一处都表现为"权限问题"，现象一样、原因不同，静态检查能挡住漏项。 */
+  ['定位权限    mobile_perm',    'python', ['check_mobile_permissions.py'], false],
   /* 真实浏览器里的 UI 自检（需要本机 Chrome + 本地服务）。
      这一步是唯一能发现"标记/事件接线错了"的检查 —— 静态分析只能证明
      名字对得上，证明不了点下去有反应。放在最后，因为它最慢。 */

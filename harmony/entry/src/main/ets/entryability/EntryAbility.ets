@@ -1,4 +1,4 @@
-import { AbilityConstant, UIAbility, Want } from '@kit.AbilityKit';
+import { AbilityConstant, UIAbility, Want, abilityAccessCtrl, Permissions } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
 import { RangeHttpServer } from '../common/RangeHttpServer';
@@ -22,6 +22,14 @@ export default class EntryAbility extends UIAbility {
 
   onWindowStageCreate(windowStage: window.WindowStage): void {
     hilog.info(DOMAIN, 'UOMViewer', 'Ability onWindowStageCreate');
+
+    // 先申请定位权限。
+    // 为什么在 Ability 里申请而不是等用户点"定位"再申请：
+    //   ① ArkWeb 的定位回调（onGeolocationShow）在页面发起请求时触发，
+    //      如果那一刻才弹权限框，用户点完还要再等一轮，而页面没有反馈；
+    //   ② 权限申请需要 UIAbilityContext，页面拿到的 context 类型不同。
+    // 申请结果不影响启动 —— 用户拒绝也能正常用，只是定位按钮会提示去设置里开。
+    this.requestLocationPermission();
 
     // 先起本地数据服务，把端口放进 AppStorage，页面构建时读取。
     // 页面加载 http://127.0.0.1:<port>/index.html —— 与本地开发用 serve.py 同构，
@@ -52,6 +60,36 @@ export default class EntryAbility extends UIAbility {
         hilog.warn(DOMAIN, 'UOMViewer', '设置全屏失败: %{public}s', JSON.stringify(e));
       }
     });
+  }
+
+  /**
+   * 申请定位权限。
+   * LOCATION 与 APPROXIMATELY_LOCATION 必须【成对】申请 ——
+   * 只申请 LOCATION 会被系统直接拒绝（API 9 起的要求），
+   * 这也是"H5 定位报权限问题"的常见原因之一。
+   */
+  private requestLocationPermission(): void {
+    try {
+      const atManager = abilityAccessCtrl.createAtManager();
+      const perms: Permissions[] = [
+        'ohos.permission.LOCATION',
+        'ohos.permission.APPROXIMATELY_LOCATION',
+      ];
+      atManager.requestPermissionsFromUser(this.context, perms)
+        .then((result) => {
+          // authResults: 0 表示已授权，-1 表示拒绝
+          const granted = result.authResults.every((v: number) => v === 0);
+          hilog.info(DOMAIN, 'UOMViewer', '定位权限申请结果 granted=%{public}s', String(granted));
+          AppStorage.setOrCreate('locationGranted', granted);
+        })
+        .catch((e: Object) => {
+          hilog.warn(DOMAIN, 'UOMViewer', '定位权限申请异常 %{public}s', JSON.stringify(e));
+          AppStorage.setOrCreate('locationGranted', false);
+        });
+    } catch (e) {
+      hilog.error(DOMAIN, 'UOMViewer', '申请定位权限失败 %{public}s', JSON.stringify(e));
+      AppStorage.setOrCreate('locationGranted', false);
+    }
   }
 
   onWindowStageDestroy(): void {

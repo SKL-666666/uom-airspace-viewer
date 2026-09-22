@@ -2,6 +2,7 @@
   "string": [
     { "name": "module_desc", "value": "UOM 适飞空域查询" },
     { "name": "EntryAbility_desc", "value": "UOM 适飞空域查询" },
-    { "name": "EntryAbility_label", "value": "UOM适飞空域" }
+    { "name": "EntryAbility_label", "value": "UOM适飞空域" },
+    { "name": "location_reason", "value": "用于在地图上定位你的当前位置，以查询该点是否为适飞空域" }
   ]
 }

@@ -4,6 +4,26 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
+    <!-- 定位权限。
+         页面用 navigator.geolocation 实现"定位我的位置"，而 WebView 里的
+         H5 定位最终依赖宿主 App 的权限：
+           · ACCESS_FINE_LOCATION   精确位置（GPS）
+           · ACCESS_COARSE_LOCATION 粗略位置（网络定位）
+         两个都要声明：只声明精确时，部分设备/系统版本会拒绝粗略请求；
+         只声明粗略则拿不到 GPS 精度。
+         注意：声明只是必要条件 —— Android 6+ 还必须在运行时动态申请
+         （见 MainActivity），并且要处理 WebView 的
+         onGeolocationPermissionsShowPrompt 回调，否则即使系统权限给了，
+         页面里的定位请求也没人应答，表现就是"权限问题"却找不到原因。 -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+
+    <!-- 声明为可选：没有 GPS 的设备（部分平板/模拟器）也应能安装。
+         运行时若拿不到定位，页面会提示"改用坐标输入"。 -->
+    <uses-feature android:name="android.hardware.location" android:required="false" />
+    <uses-feature android:name="android.hardware.location.gps" android:required="false" />
+    <uses-feature android:name="android.hardware.location.network" android:required="false" />
+
     <application
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"
